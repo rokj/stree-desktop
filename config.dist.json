@@ -1,0 +1,16 @@
+{
+    "remote": {
+        "host": "",
+        "access_key": "",
+        "secret_key": "",
+        "bucket": ""
+    },
+
+    "local_path": "",
+    "local_device_name": "my_laptop",
+
+    "title": "Stree",
+    "logo": "logo.png",
+    "sync_time": 3,
+    "debug": true
+}
