@@ -1,0 +1,1 @@
+Based on https://aykevl.nl/2017/04/concise-version-vectors.
