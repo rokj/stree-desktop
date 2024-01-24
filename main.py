@@ -16,7 +16,7 @@ print("watch out; we are deleting everything in /home/arne/development/python/st
 os.system("rm -rf /home/arne/development/python/stree/arnes-shramba/")
 
 remote_path = lambda key: "{0}/{1}".format(config['remote']['bucket'], key)
-object_type = lambda o: "directory" if o['Key'].endswith('/') and o['Size'] == 0 else "file"
+skip_empty_objects = lambda o: True if o['Key'].endswith('/') and o['Size'] == 0 else False
 path_from_key = lambda string: string.rpartition('/')[0]
 
 config = None
@@ -41,6 +41,11 @@ root.geometry("{}x{}+{}+{}".format(window_width, window_height, x_cordinate, y_c
 img = ImageTk.PhotoImage(Image.open(config['logo']))
 panel = tk.Label(root, image=img)
 panel.pack(side="bottom", fill="both", expand="yes")
+
+def object_type(o):
+
+    object_type_by_key_and_size = lambda o: "directory" if o['Key'].endswith('/') and o['Size'] == 0 else "file"
+    object_type = lambda o: "directory" if 'Prefix' in o else "file"
 
 
 def on_top_path(path):
@@ -94,21 +99,22 @@ def clear_logo():
 
 
 def get_remote_data(prefix=None, delimiter=None):
-    if delimiter and prefix:
-        response = s3.list_objects(
-            Bucket=config['remote']['bucket'],
-            MaxKeys=config['remote']['max_keys'],
-            Prefix=prefix,
-            Delimiter=delimiter
-        )
-    else:
-        response = s3.list_objects(
-            Bucket=config['remote']['bucket'],
-            MaxKeys=config['remote']['max_keys']
-        )
+    response = s3.list_objects(
+        Bucket=config['remote']['bucket'],
+        MaxKeys=config['remote']['max_keys'],
+        Prefix=prefix,
+        Delimiter=delimiter
+    )
+
+    if 'CommonPrefixes' in response:
+        for cp in response['CommonPrefixes']:
+            response['Contents'].append({
+                'Key': cp['Prefix'],
+                'IsDirectory': True
+            })
+
 
     return response['Contents']
-
 
 # todo: implement
 def get_remote_version(key, version=None):
@@ -173,8 +179,15 @@ def get_remote_bucket_version():
                 found = tag['Value']
                 break
 
+        if found == "":
+            found = set_remote_bucket_version()
+
+            if not found:
+                return None
+
         if config['debug']:
             print("remote bucket version {0}".format(found))
+
         return found
 
     print("error getting tag s_version of a bucket {0}".format(config['remote']['bucket']))
@@ -182,9 +195,12 @@ def get_remote_bucket_version():
     return None
 
 
-def set_bucket_version(now=None):
+def set_remote_bucket_version(now=None):
     if now is None:
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+
+    if config['debug']:
+        print("setting {0} bucket version to {1}".format(config['remote']['bucket'], now))
 
     response = s3.put_bucket_tagging(
         Bucket=config['remote']['bucket'],
@@ -208,15 +224,18 @@ def set_bucket_version(now=None):
 
 def local_file_from_path(path):
     sql = 'select id from files where path = ?'
-    cursor = db.execute(sql, [path])
-    row = cursor.fetchone()
+    cursor = db.cursor()
+    result = cursor.execute(sql, [path])
+    row = result.fetchone()
     return row
 
 def download_remote_file(o):
-    if config['debug']:
-        print("about to download file from key {0}".format(o['Key']))
+    key = o['Key']
 
-    remote_version = get_remote_version(o['Key'])
+    if config['debug']:
+        print("about to download file/directory from key {0}".format(key))
+
+    remote_version = get_remote_version(key)
     if remote_version is None:
         print("could not get remote version")
         return
@@ -226,40 +245,69 @@ def download_remote_file(o):
         config['remote']['host']: remote_version
     }
 
-    path = remote_path(o['Key'])
+    path = remote_path(key)
     if config['debug']:
         print("will download to {0}".format(path))
-    remote_etag = o['ETag'].replace('"', "")
+
+    remote_etag = ""
     local_etag = ""
-    if object_type(o) == "file":
-        s3.download_file(config['remote']['bucket'], o['Key'], path)
-        local_etag = get_local_etag(pathlib.Path(path))
+
+    if 'IsDirectory' in o:
+        if config['debug']:
+            print("this is directory")
+        if not os.path.exists(path):
+            if config['debug']:
+                print("creating directory {0}".format(path))
+            os.makedirs(path)
+    else:
+        # this is file, so we should download it
+        if config['debug']:
+            print("this is file, so we are doing actual download")
+        remote_etag = o['ETag'].replace('"', "")
+        # we create local dir if it not exists
+        local_dir = os.path.dirname(path)
+        if not os.path.exists(local_dir):
+            if config['debug']:
+                print("creating directory {0}".format(local_dir))
+            os.makedirs(local_dir)
+
+        if not skip_empty_objects(o):
+            s3.download_file(config['remote']['bucket'], key, path)
+            local_etag = get_local_etag(pathlib.Path(path))
 
     if config['debug']:
         print("local etag {0}".format(local_etag))
         print("remote etag {0}".format(remote_etag))
         if local_etag != remote_etag:
-            print("we should not be here. etags should be the same. got local etag {0} and remote etag {1}".format(local_etag, remote_etag))
+            print("we should not be here. etags should be the same. got local etag and remote etag")
 
     sql = "insert into files(path, version, type, local_etag, remote_etag) values (?, ?, ?, ?, ?)"
     cursor = db.cursor()
-    cursor.execute(sql, [path, json.dumps(version), object_type(o), local_etag, remote_etag])
+    cursor.execute(sql, (path, json.dumps(version), object_type(o), local_etag, remote_etag))
     db.commit()
 
 def get_local_bucket_version():
-    sql = 'select value from info where key = ?'
-    cursor = db.execute(sql, ['bucket_version'])
-    row = cursor.fetchone()
+    sql = "select value from info where key = 'bucket_version'"
+    cursor = db.cursor()
+    result = cursor.execute(sql)
+    row = result.fetchone()
+
     if config['debug']:
         print("local bucket version {0}".format(row['value']))
 
     return row['value']
 
+def set_local_bucket_version(version):
+    sql = "update info set value = ? where key = 'bucket_version'"
+    cursor = db.cursor()
+    cursor.execute(sql, [(version)])
+    db.commit()
 
 def get_local_version(path):
     sql = 'select version from files where path = ?'
-    cursor = db.execute(sql, [path])
-    row = cursor.fetchone()
+    cursor = db.cursor()
+    result = cursor.execute(sql, [(path)])
+    row = result.fetchone()
 
     if row:
         return row['version']
@@ -272,7 +320,8 @@ def check_remote_paths_for_its_existence(path):
     i = 0
 
     while True:
-        path = path + "/"
+        if not path.endswith("/"):
+            path = path + "/"
         if config['debug']:
             print("checking path for its existence {0}".format(path))
 
@@ -294,9 +343,11 @@ def check_remote_paths_for_its_existence(path):
             print("too deep path?")
             break
 
+
 def update_parent_versions(path):
     while True:
-        path = path + "/"
+        if not path.endswith("/"):
+            path = path + "/"
         if config['debug']:
             print("checking path for its existence {0}".format(path))
 
@@ -310,7 +361,10 @@ def update_parent_versions(path):
             if tmp_local_version[config['remote']['host']] != remote_version:
                 tmp_local_version[config['remote']['host']] = remote_version
                 sql = 'update files set version = ? where path = ?'
-                db.execute(sql, [json.dumps(tmp_local_version), full_remote_path])
+                cursor = db.cursor()
+                cursor.execute(sql, [json.dumps(tmp_local_version), full_remote_path])
+                db.commit()
+
 
         if on_top_path(path):
             break
@@ -329,65 +383,37 @@ def sync():
         print("syncing after {0}s".format(config['sync_time']))
 
     sql = 'select count(*) as count from files'
-    cursor = db.execute(sql)
-    row = cursor.fetchone()
+    cursor = db.cursor()
+    result = cursor.execute(sql)
+    row = result.fetchone()
     if config['debug']:
         print("we have {0} files in local db".format(row['count']))
 
     # if this is first launch of the program, then we populate local db with remote "data"
     # we do not require "lock" for first usage
     if row['count'] == 0:
-        objects = get_remote_data()
-        for o in objects:
+        i = 0
+        todo = get_remote_data(prefix="", delimiter="/")
+        while i < len(todo):
+            o = todo[i]
+            i += 1
+
             if config['debug']:
                 print(o)
-            path = remote_path(o['Key'])
 
-            remote_version = get_remote_version(o['Key'])
-            if remote_version is None:
+            if 'IsDirectory' in o:
+                tmp = get_remote_data(prefix=o['Key'], delimiter="/")
+                todo.extend(tmp)
                 continue
 
-            if remote_version == "":
-                remote_version = set_remote_version(o['Key'])
+            download_remote_file(o)
 
-            version = {
-                config['local_device_name']: remote_version,
-                config['remote']['host']: remote_version
-            }
-
-            local_dir = os.path.dirname(path)
-
-            if config['debug']:
-                print('local path: {0}'.format(path))
-                print('local dir: {0}'.format(local_dir))
-
-            if not os.path.exists(local_dir):
-                os.makedirs(local_dir)
-
-            pathlib.Path(path).parent.mkdir(parents=True, exist_ok=True)
-
-            remote_etag = o['ETag'].replace('"', "")
-            local_etag = ""
-            if object_type(o) == "file":
-                s3.download_file(config['remote']['bucket'], o['Key'], path)
-                local_etag = get_local_etag(pathlib.Path(path))
-
-            sql = "insert into files(path, version, type, local_etag, remote_etag) values (?, ?, ?, ?, ?)"
-            cursor = db.cursor()
-            cursor.execute(sql, [path, json.dumps(version), object_type(o), local_etag, remote_etag])
-            db.commit()
-
-            if object_type(o) == "file" and config['debug'] and local_etag != remote_etag:
-                print('local etag: {0}'.format(get_local_etag(pathlib.Path(path))))
-                print('remote etag: {0}'.format(remote_etag))
-
-        if len(objects) > 0:
-            bucket_version = set_bucket_version()
-            sql = "insert into info(key, value) values ('bucket_version', ?)"
-            cursor = db.cursor()
-            cursor.execute(sql, [bucket_version])
-            db.commit()
-
+        bucket_version = get_remote_bucket_version()
+        sql = "insert into info(key, value) values ('bucket_version', ?)"
+        cursor = db.cursor()
+        cursor.execute(sql, [(bucket_version)])
+        db.commit()
+    """
     else:
         # todo
         # we are extra cautious if there are remote and local changes
@@ -405,33 +431,41 @@ def sync():
                 print("we should not be here, since local bucket s_version tag should be set from previous actions")
                 return
 
-        versions_to_update = []
-        check_again = False
         if local_bucket_version != remote_bucket_version:
             print("local bucket version differs from remote bucket version")
             print("local: {0} remote: {1}".format(local_bucket_version, remote_bucket_version))
 
-            objects = get_remote_data(prefix="", delimiter="/")
-            for o in objects:
-                path = remote_path(o['Key'])
+            i = 0
+            todo = get_remote_data(prefix="", delimiter="/")
+            while i < len(todo):
+                o = todo[i]
+                i += 1
+
                 # if remote does exist but local does not, get or create it
-                if not local_file_from_path(path):
+                if object_type(o) == "file":
+                    path = remote_path(o['Key'])
                     if config['debug']:
-                        print("path: {0} is not in local db".format(path))
-                    if object_type(o) == "file":
+                        print("doing path: {0}".format(path))
+                    if not local_file_from_path(path):
                         check_remote_paths_for_its_existence(path_from_key(o['Key']))
                         download_remote_file(o)
                         update_parent_versions(path_from_key(o['Key']))
-                    if object_type(o) == "directory":
-                        # todo: recurse to directory
-                        pass
+                elif object_type(o) == "directory":
+                    path = remote_path(o['Prefix'])
+                    if config['debug']:
+                        print("doing path: {0}".format(path))
+                    if not local_file_from_path(path):
+                        check_remote_paths_for_its_existence(path)
+                        download_remote_file(o)
+                        update_parent_versions(path_from_key(o['Prefix']))
 
+                        tmp = get_remote_data(prefix=o['Prefix'], delimiter="/")
+                        todo.append(tmp)
             remote_bucket_version = get_remote_bucket_version()
-            set_bucket_version(remote_bucket_version)
-
-        # now we check for local changes
-
-
+            set_local_bucket_version(remote_bucket_version)
+    """
+    if config['debug']:
+        print("just before sync")
     root.after(1000 * config['sync_time'], sync)
 
 
@@ -442,16 +476,17 @@ def get_db():
         conn.row_factory = sqlite3.Row
 
         sql = 'drop table files'
-        conn.execute(sql)
+        cursor = conn.cursor()
+        cursor.execute(sql)
 
         sql = 'drop table info'
-        conn.execute(sql)
+        cursor.execute(sql)
 
         sql = 'create table if not exists files(id integer primary key autoincrement, path varchar(255) unique, version varchar(255), type varchar(9), remote_etag varchar(32), local_etag varchar(32))'
-        conn.execute(sql)
+        cursor.execute(sql)
 
         sql = 'create table if not exists info(key varchar(20) primary key, value varchar(50))'
-        conn.execute(sql)
+        cursor.execute(sql)
     except Error as e:
         print(e)
 
@@ -460,7 +495,7 @@ def get_db():
 
 def add_tmp_file_click(event):
     print(s3.put_object(Body='/home/arne/tmp/testni-file3.txt', Bucket=config['remote']['bucket'], Key='tlenot/testni-file3.txt'))
-    set_bucket_version()
+    set_remote_bucket_version()
 
 
 def toggle_pause_sync(event):
