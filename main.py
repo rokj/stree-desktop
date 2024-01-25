@@ -331,17 +331,18 @@ def get_local_version(path):
 
 
 def check_remote_paths_for_its_existence(path):
-    max_checks = 40
-    i = 0
-
-    if path == "/" or path == "":
+    if not path or path == "":
         return
 
-    while True:
+    splitted_path = path.split("/")
+
+    while len(splitted_path) > 0:
         if not path.endswith("/"):
             path = path + "/"
+
         if config['debug']:
             print("checking path for its existence {0}".format(path))
+            print("splitted_path: {0}".format(splitted_path))
 
         response = s3.head_object(
             Bucket=config['remote']['bucket'],
@@ -351,29 +352,45 @@ def check_remote_paths_for_its_existence(path):
                 print("no path object exists, so we create one")
             s3.put_object(Bucket=config['remote']['bucket'], Key=path, Body='')
 
-        if on_top_path(path):
-            break
-
-        path = path.rpartition("/")[0]
-
-        i += 1
-        if i > max_checks:
-            print("too deep path?")
-            break
+        splitted_path = splitted_path[:-1]
+        path = "/".join(splitted_path)
 
 
-def update_parent_versions(path):
-    if path == "/" or path == "":
+def update_remote_parent_versions(path):
+    if not path or path == "":
         return
 
-    while True:
+    splitted_path = path.split("/")
+
+    while len(splitted_path) > 0:
         if not path.endswith("/"):
             path = path + "/"
+
+        if config['debug']:
+            print("update version for path {0}".format(path))
+            print("splitted_path: {0}".format(splitted_path))
+
+        set_remote_version(path)
+
+        splitted_path = splitted_path[:-1]
+        path = "/".join(splitted_path)
+
+# but watch out, if for some reason remote version does not exist, we create it
+def update_local_parent_versions(path):
+    if not path or path == "":
+        return
+
+    splitted_path = path.split("/")
+
+    while len(splitted_path) > 0:
+        if not path.endswith("/"):
+            path = path + "/"
+
         if config['debug']:
             print("checking path for its existence {0}".format(path))
+            print("splitted_path: {0}".format(splitted_path))
 
         full_remote_path = remote_path(path)
-
         remote_version = get_remote_version(path)
         local_version = get_local_version(full_remote_path)
 
@@ -386,10 +403,8 @@ def update_parent_versions(path):
                 cursor.execute(sql, [json.dumps(tmp_local_version), full_remote_path])
                 db.commit()
 
-        if on_top_path(path):
-            break
-
-        path = path.rpartition("/")[0]
+        splitted_path = splitted_path[:-1]
+        path = "/".join(splitted_path)
 
 
 def sync():
@@ -469,7 +484,7 @@ def sync():
                             print("directory with path: {0} not in db, we should add it".format(path))
                         check_remote_paths_for_its_existence(path_from_key(o['Key']))
                         download_remote_file(o)
-                        update_parent_versions(path_from_key(o['Key']))
+                        update_local_parent_versions(path_from_key(o['Key']))
 
                         tmp = get_remote_data(prefix=o['Key'], delimiter="/")
                         todo.extend(tmp)
@@ -484,7 +499,7 @@ def sync():
                             print("file with path: {0} not in db, we should add it".format(path))
                         check_remote_paths_for_its_existence(path_from_key(o['Key']))
                         download_remote_file(o)
-                        update_parent_versions(path_from_key(o['Key']))
+                        update_local_parent_versions(path_from_key(o['Key']))
 
             remote_bucket_version = get_remote_bucket_version()
             set_local_bucket_version(remote_bucket_version)
@@ -522,6 +537,10 @@ def add_tmp_file_click(event):
                         Key='testni-file4.txt'))
     print(s3.put_object(Body='/home/arne/tmp/testni-file3.txt', Bucket=config['remote']['bucket'],
                         Key='tlenot/testni-file3.txt'))
+
+    update_remote_parent_versions(path_from_key('testni-file4.txt'))
+    update_remote_parent_versions(path_from_key('tlenot/testni-file3.txt'))
+
     set_remote_bucket_version()
 
 
