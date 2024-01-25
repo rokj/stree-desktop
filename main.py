@@ -18,6 +18,7 @@ os.system("rm -rf /home/arne/development/python/stree/arnes-shramba/")
 remote_path = lambda key: "{0}/{1}".format(config['remote']['bucket'], key)
 skip_empty_objects = lambda o: True if o['Key'].endswith('/') and o['Size'] == 0 else False
 path_from_key = lambda string: string.rpartition('/')[0]
+is_root = lambda path: True if path == config['remote']['bucket'] else False
 
 config = None
 with open('config.json') as f:
@@ -42,10 +43,12 @@ img = ImageTk.PhotoImage(Image.open(config['logo']))
 panel = tk.Label(root, image=img)
 panel.pack(side="bottom", fill="both", expand="yes")
 
-def object_type(o):
 
-    object_type_by_key_and_size = lambda o: "directory" if o['Key'].endswith('/') and o['Size'] == 0 else "file"
-    object_type = lambda o: "directory" if 'Prefix' in o else "file"
+def object_type(o):
+    if 'IsDirectory' in o or (o['Key'].endswith('/') and o['Size'] == 0):
+        return "directory"
+
+    return "file"
 
 
 def on_top_path(path):
@@ -53,7 +56,7 @@ def on_top_path(path):
     if '' in tmp_split:
         tmp_split.remove('')
 
-    if len(tmp_split):
+    if len(tmp_split) == 0:
         return True
 
     return False
@@ -98,7 +101,7 @@ def clear_logo():
     panel.pack_forget()
 
 
-def get_remote_data(prefix=None, delimiter=None):
+def get_remote_data(prefix=None, delimiter=None, remove_prefix=True):
     response = s3.list_objects(
         Bucket=config['remote']['bucket'],
         MaxKeys=config['remote']['max_keys'],
@@ -113,6 +116,14 @@ def get_remote_data(prefix=None, delimiter=None):
                 'IsDirectory': True
             })
 
+    if remove_prefix:
+        tmp = []
+        for r in response['Contents']:
+            if r['Key'] == prefix:
+                continue
+            tmp.append(r)
+
+        return tmp
 
     return response['Contents']
 
@@ -252,14 +263,7 @@ def download_remote_file(o):
     remote_etag = ""
     local_etag = ""
 
-    if 'IsDirectory' in o:
-        if config['debug']:
-            print("this is directory")
-        if not os.path.exists(path):
-            if config['debug']:
-                print("creating directory {0}".format(path))
-            os.makedirs(path)
-    else:
+    if object_type(o) == "file":
         # this is file, so we should download it
         if config['debug']:
             print("this is file, so we are doing actual download")
@@ -268,23 +272,33 @@ def download_remote_file(o):
         local_dir = os.path.dirname(path)
         if not os.path.exists(local_dir):
             if config['debug']:
-                print("creating directory {0}".format(local_dir))
+                print("creating directory {0} for file {1}".format(local_dir, path))
             os.makedirs(local_dir)
 
         if not skip_empty_objects(o):
             s3.download_file(config['remote']['bucket'], key, path)
             local_etag = get_local_etag(pathlib.Path(path))
+    else:
+        if config['debug']:
+            print("this is directory")
+        if not os.path.exists(path):
+            if config['debug']:
+                print("creating directory {0}".format(path))
+            os.makedirs(path)
+
 
     if config['debug']:
         print("local etag {0}".format(local_etag))
         print("remote etag {0}".format(remote_etag))
-        if local_etag != remote_etag:
+        if object_type(o) == "file" and local_etag != remote_etag:
             print("we should not be here. etags should be the same. got local etag and remote etag")
+        print("type {0}".format(object_type(o)))
 
-    sql = "insert into files(path, version, type, local_etag, remote_etag) values (?, ?, ?, ?, ?)"
-    cursor = db.cursor()
-    cursor.execute(sql, (path, json.dumps(version), object_type(o), local_etag, remote_etag))
-    db.commit()
+    if not local_file_from_path(path):
+        sql = "insert into files(path, version, type, local_etag, remote_etag) values (?, ?, ?, ?, ?)"
+        cursor = db.cursor()
+        cursor.execute(sql, (path, json.dumps(version), object_type(o), local_etag, remote_etag))
+        db.commit()
 
 def get_local_bucket_version():
     sql = "select value from info where key = 'bucket_version'"
@@ -303,6 +317,7 @@ def set_local_bucket_version(version):
     cursor.execute(sql, [(version)])
     db.commit()
 
+
 def get_local_version(path):
     sql = 'select version from files where path = ?'
     cursor = db.cursor()
@@ -318,6 +333,9 @@ def get_local_version(path):
 def check_remote_paths_for_its_existence(path):
     max_checks = 40
     i = 0
+
+    if path == "/" or path == "":
+        return
 
     while True:
         if not path.endswith("/"):
@@ -345,6 +363,9 @@ def check_remote_paths_for_its_existence(path):
 
 
 def update_parent_versions(path):
+    if path == "/" or path == "":
+        return
+
     while True:
         if not path.endswith("/"):
             path = path + "/"
@@ -364,7 +385,6 @@ def update_parent_versions(path):
                 cursor = db.cursor()
                 cursor.execute(sql, [json.dumps(tmp_local_version), full_remote_path])
                 db.commit()
-
 
         if on_top_path(path):
             break
@@ -401,10 +421,9 @@ def sync():
             if config['debug']:
                 print(o)
 
-            if 'IsDirectory' in o:
+            if object_type(o) == "directory":
                 tmp = get_remote_data(prefix=o['Key'], delimiter="/")
                 todo.extend(tmp)
-                continue
 
             download_remote_file(o)
 
@@ -413,7 +432,7 @@ def sync():
         cursor = db.cursor()
         cursor.execute(sql, [(bucket_version)])
         db.commit()
-    """
+
     else:
         # todo
         # we are extra cautious if there are remote and local changes
@@ -441,29 +460,34 @@ def sync():
                 o = todo[i]
                 i += 1
 
+                if object_type(o) == "directory":
+                    path = remote_path(o['Key'])
+                    if config['debug']:
+                        print("checking directory with path: {0}".format(path))
+                    if not local_file_from_path(path):
+                        if config['debug']:
+                            print("directory with path: {0} not in db, we should add it".format(path))
+                        check_remote_paths_for_its_existence(path_from_key(o['Key']))
+                        download_remote_file(o)
+                        update_parent_versions(path_from_key(o['Key']))
+
+                        tmp = get_remote_data(prefix=o['Key'], delimiter="/")
+                        todo.extend(tmp)
                 # if remote does exist but local does not, get or create it
                 if object_type(o) == "file":
                     path = remote_path(o['Key'])
                     if config['debug']:
-                        print("doing path: {0}".format(path))
+                        print("checking object {0}".format(o))
+                        print("checking file with path: {0}".format(path))
                     if not local_file_from_path(path):
+                        if config['debug']:
+                            print("file with path: {0} not in db, we should add it".format(path))
                         check_remote_paths_for_its_existence(path_from_key(o['Key']))
                         download_remote_file(o)
                         update_parent_versions(path_from_key(o['Key']))
-                elif object_type(o) == "directory":
-                    path = remote_path(o['Prefix'])
-                    if config['debug']:
-                        print("doing path: {0}".format(path))
-                    if not local_file_from_path(path):
-                        check_remote_paths_for_its_existence(path)
-                        download_remote_file(o)
-                        update_parent_versions(path_from_key(o['Prefix']))
 
-                        tmp = get_remote_data(prefix=o['Prefix'], delimiter="/")
-                        todo.append(tmp)
             remote_bucket_version = get_remote_bucket_version()
             set_local_bucket_version(remote_bucket_version)
-    """
     if config['debug']:
         print("just before sync")
     root.after(1000 * config['sync_time'], sync)
@@ -494,7 +518,10 @@ def get_db():
 
 
 def add_tmp_file_click(event):
-    print(s3.put_object(Body='/home/arne/tmp/testni-file3.txt', Bucket=config['remote']['bucket'], Key='tlenot/testni-file3.txt'))
+    print(s3.put_object(Body='/home/arne/tmp/testni-file3.txt', Bucket=config['remote']['bucket'],
+                        Key='testni-file4.txt'))
+    print(s3.put_object(Body='/home/arne/tmp/testni-file3.txt', Bucket=config['remote']['bucket'],
+                        Key='tlenot/testni-file3.txt'))
     set_remote_bucket_version()
 
 
@@ -553,6 +580,7 @@ s3 = boto3.client("s3",
 
 print("TODO DELETE THIS")
 print(s3.delete_object(Bucket=config['remote']['bucket'], Key='tlenot/testni-file3.txt'))
+print(s3.delete_object(Bucket=config['remote']['bucket'], Key='testni-file4.txt'))
 
 root.after(2400, clear_logo)
 root.after(1000 * config['sync_time'], sync)
