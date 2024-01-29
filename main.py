@@ -18,7 +18,6 @@ os.system("rm -rf /home/arne/development/python/stree/arnes-shramba/")
 remote_path = lambda key: "{0}/{1}".format(config['remote']['bucket'], key)
 skip_empty_objects = lambda o: True if o['Key'].endswith('/') and o['Size'] == 0 else False
 path_from_key = lambda string: string.rpartition('/')[0]
-is_root = lambda path: True if path == config['remote']['bucket'] else False
 
 config = None
 with open('config.json') as f:
@@ -155,7 +154,7 @@ def get_remote_version(key, version=None):
 
 
 def set_remote_version(key):
-    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
 
     response = s3.put_object_tagging(
         Bucket=config['remote']['bucket'],
@@ -240,7 +239,7 @@ def local_file_from_path(path):
     row = result.fetchone()
     return row
 
-def download_remote_file(o):
+def download_remote_file(o, delete_existing=True):
     key = o['Key']
 
     if config['debug']:
@@ -275,6 +274,11 @@ def download_remote_file(o):
                 print("creating directory {0} for file {1}".format(local_dir, path))
             os.makedirs(local_dir)
 
+        if delete_existing and os.path.isfile(path):
+            if config['debug']:
+                print("we are deleting file {0} so we can download it afterwards")
+            os.remove(path)
+
         if not skip_empty_objects(o):
             s3.download_file(config['remote']['bucket'], key, path)
             local_etag = get_local_etag(pathlib.Path(path))
@@ -285,7 +289,6 @@ def download_remote_file(o):
             if config['debug']:
                 print("creating directory {0}".format(path))
             os.makedirs(path)
-
 
     if config['debug']:
         print("local etag {0}".format(local_etag))
@@ -298,6 +301,11 @@ def download_remote_file(o):
         sql = "insert into files(path, version, type, local_etag, remote_etag) values (?, ?, ?, ?, ?)"
         cursor = db.cursor()
         cursor.execute(sql, (path, json.dumps(version), object_type(o), local_etag, remote_etag))
+        db.commit()
+    else:
+        sql = "update files set version = ?, local_etag = ?, remote_etag = ? where path = ?"
+        cursor = db.cursor()
+        cursor.execute(sql, (json.dumps(version), local_etag, remote_etag, path))
         db.commit()
 
 def get_local_bucket_version():
@@ -325,7 +333,18 @@ def get_local_version(path):
     row = result.fetchone()
 
     if row:
-        return row['version']
+        version = json.loads(row['version'])
+        now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
+
+        if config['local_device_name'] not in version:
+            version['local_device_name'] = now
+            sql = 'update files set version = ? where path = ?'
+            cursor = db.cursor()
+            cursor.execute(sql, [json.dumps(version), path])
+            db.commit()
+
+
+        return version
 
     return None
 
@@ -356,7 +375,8 @@ def check_remote_paths_for_its_existence(path):
         path = "/".join(splitted_path)
 
 
-def update_remote_parent_versions(path):
+# todo update versions with now parameter if set
+def update_remote_parent_versions(path, now=None):
     if not path or path == "":
         return
 
@@ -406,6 +426,9 @@ def update_local_parent_versions(path):
         splitted_path = splitted_path[:-1]
         path = "/".join(splitted_path)
 
+
+def utc_to_float(utc_string):
+    return datetime.datetime.strptime(utc_string, "%Y-%m-%d %H:%M:%S.%f").timestamp()
 
 def sync():
     if sync_pause:
@@ -494,12 +517,48 @@ def sync():
                     if config['debug']:
                         print("checking object {0}".format(o))
                         print("checking file with path: {0}".format(path))
+
                     if not local_file_from_path(path):
+                        # 1. check if there was a new file added
                         if config['debug']:
                             print("file with path: {0} not in db, we should add it".format(path))
                         check_remote_paths_for_its_existence(path_from_key(o['Key']))
                         download_remote_file(o)
                         update_local_parent_versions(path_from_key(o['Key']))
+                    else:
+                        # 2. check if file was updated
+                        # if remote version differs from local version, we update it
+                        _remote_version = get_remote_version(o['Key'])
+                        _local_version = get_local_version(path)
+
+                        if _remote_version is None or _local_version is None:
+                            print("could not get remote version for key {0} or local version {1}".format(o['Key'], path))
+                            continue
+
+                        local_version_device = utc_to_float(_local_version[config['local_device_name']])
+                        local_version_remote = utc_to_float(_local_version[config['remote']['host']])
+                        remote_version = utc_to_float(_remote_version)
+
+                        changed_locally = False
+                        if local_version_device > local_version_remote:
+                            changed_locally = True
+
+                        changed_remotely = False
+                        if remote_version > local_version_remote:
+                            changed_remotely = True
+
+                        if changed_locally and changed_remotely:
+                            print("CONFLICT: key {0} of path {1} changed locally and remotely".format(o['Key'], path))
+                            continue
+
+                        if changed_locally:
+                            # todo upload to remote
+                            pass
+
+                        if changed_remotely:
+                            check_remote_paths_for_its_existence(path_from_key(o['Key']))
+                            download_remote_file(o)
+                            update_local_parent_versions(path_from_key(o['Key']))
 
             remote_bucket_version = get_remote_bucket_version()
             set_local_bucket_version(remote_bucket_version)
@@ -533,13 +592,24 @@ def get_db():
 
 
 def add_tmp_file_click(event):
-    print(s3.put_object(Body='/home/arne/tmp/testni-file3.txt', Bucket=config['remote']['bucket'],
-                        Key='testni-file4.txt'))
-    print(s3.put_object(Body='/home/arne/tmp/testni-file3.txt', Bucket=config['remote']['bucket'],
-                        Key='tlenot/testni-file3.txt'))
+    # print(s3.upload_file('/home/arne/tmp/testni-file3.txt', config['remote']['bucket'], 'testni-file4.txt'))
+    print(s3.put_object(Body='FAFAFA', Bucket=config['remote']['bucket'], Key='tlenot/testni-file3.txt'))
 
-    update_remote_parent_versions(path_from_key('testni-file4.txt'))
+    set_remote_version('tlenot/testni-file3.txt')
     update_remote_parent_versions(path_from_key('tlenot/testni-file3.txt'))
+    set_remote_bucket_version()
+
+    # update_remote_parent_versions(path_from_key('tlenot/testni-file3.txt'))
+
+def update_versions(event):
+    sql = 'select path from files'
+    cursor = db.cursor()
+    result = cursor.execute(sql)
+    rows = result.fetchall()
+    for row in rows:
+        print(row['path'])
+        path = row['path'].replace("arnes-shramba/", "")
+        set_remote_version(path)
 
     set_remote_bucket_version()
 
@@ -562,18 +632,22 @@ def main_gui():
         relief=tk.RAISED,
         borderwidth=1
     )
-    frame.grid(row=2, column=1)
+    frame.grid(row=2, column=4)
 
     add_tmp_file_button = tk.Button(frame, text="ADD", width=15, height=4)
     add_tmp_file_button.grid(column=0, row=0)
     add_tmp_file_button.bind('<Button-1>', add_tmp_file_click)
 
+    update_versions_button = tk.Button(frame, text="UPDATE VERSIONS", width=15, height=4)
+    update_versions_button.grid(column=1, row=0)
+    update_versions_button.bind('<Button-1>', update_versions)
+
     pause_sync_button = tk.Button(frame, text="Pause sync", width=15, height=4)
-    pause_sync_button.grid(column=1, row=0)
+    pause_sync_button.grid(column=2, row=0)
     pause_sync_button.bind('<Button-1>', toggle_pause_sync)
 
     activity_button = tk.Button(frame, text="Activity", width=15, height=4)
-    activity_button.grid(column=2, row=0)
+    activity_button.grid(column=3, row=0)
 
     text_area = tk.Text(frame, width=100, height=15, wrap="none")
     # ys = tk.Scrollbar(frame, orient='vertical', command=text_area.yview)
@@ -581,7 +655,7 @@ def main_gui():
     # text_area['yscrollcommand'] = ys.set
     # text_area['xscrollcommand'] = xs.set
     text_area.insert('end', "Lorem ipsum...\n...\n...")
-    text_area.grid(column=0, row=1, sticky='nwes', columnspan=3)
+    text_area.grid(column=0, row=1, sticky='nwes', columnspan=4)
     # xs.grid(column=0, row=1, sticky='we')
     # ys.grid(column=1, row=0, sticky='ns')
     # frame.grid_columnconfigure(0, weight=1)
