@@ -502,6 +502,8 @@ def update_remote_parent_versions(path, same_real_datetime_update=False):
         splitted_path = splitted_path[:-1]
         path = "/".join(splitted_path)
 
+    set_remote_bucket_version(now)
+
 # but watch out, if for some reason remote version does not exist, we create it
 def update_local_parent_versions(path):
     if not path or path == "":
@@ -531,6 +533,17 @@ def update_local_parent_versions(path):
 
         splitted_path = splitted_path[:-1]
         path = "/".join(splitted_path)
+
+    remote_bucket_version = get_remote_bucket_version()
+    local_bucket_version = get_local_bucket_version()
+
+    if local_bucket_version is not None:
+        if local_bucket_version[config['remote']['host']] != remote_bucket_version:
+            local_bucket_version[config['remote']['host']] = remote_bucket_version
+            sql = 'update files set version = ? where path = ?'
+            cursor = db.cursor()
+            cursor.execute(sql, [json.dumps(local_bucket_version), config['remote']['bucket']])
+            db.commit()
 
 
 def utc_to_float(utc_string):
@@ -713,6 +726,9 @@ def sync_to_remote():
                 # 1. check if there was a new file added
                 if config['debug']:
                     print("local file with path: {0} not in db, we should add it".format(o['absolute_path']))
+
+                # add_to_db(o['Key'])
+
                 check_remote_paths_for_its_existence(path_from_key(o['Key']))
                 if remote_key_exists(o['Key']):
                     print(
@@ -724,6 +740,7 @@ def sync_to_remote():
             else:
                 # 2. check if file was updated
                 # if remote version differs from local version, we update it
+
                 changed = check_object_changes(o)
                 if changed is None:
                     continue
@@ -776,6 +793,17 @@ def sync():
             print("local path should be empty on first run")
             return
 
+        # we insert bucket path
+        bucket_init_version = {
+            config['remote']['host']: "",
+            config['local_device_name']: ""
+        }
+
+        sql = "insert into files(path, path_depth, version, type) values (?, ?, ?, ?)"
+        cursor = db.cursor()
+        cursor.execute(sql, (config['remote']['bucket'] + "/", 1, json.dumps(bucket_init_version), "directory"))
+        db.commit()
+
         i = 0
         remote_todo = list_remote_objects(prefix="", delimiter="/")
         while i < len(remote_todo):
@@ -813,12 +841,12 @@ def sync():
     if changed_bucket["locally"] and changed_bucket["remotely"]:
         print("local AND remote files has been changed, this is possible CONFLICT, however let us try to sync anyway")
 
-        sync_from_remote()
-        sync_to_remote()
-    elif changed_bucket["locally"]:
-        sync_to_remote()
     elif changed_bucket["remotely"]:
         sync_from_remote()
+
+    # todo: until we implement some watcher of changed files, we do full local scan every time
+    # https://github.com/gorakhargosh/watchdog/
+    sync_to_remote()
 
     root.after(1000 * config['sync_time'], sync)
 
