@@ -145,7 +145,7 @@ def list_local_folders(path):
     for entry in os.scandir(path):
         tmp = {
             "absolute_path": entry.path,
-            "relative_path": entry.path.replace(config['local_path'], ""),
+            "Key": entry.path.replace(config['local_path'], ""), # this is actually relative path
             "type": "directory" if entry.is_dir() else "file"
         }
         entries.append(tmp)
@@ -176,8 +176,9 @@ def get_remote_version(key, version=None):
     return None
 
 
-def set_remote_version(key):
-    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
+def set_remote_version(key, now=None):
+    if now is None:
+        now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
 
     response = s3.put_object_tagging(
         Bucket=config['remote']['bucket'],
@@ -345,8 +346,23 @@ def get_remote_etag(key):
 
     return None
 
+
+def remote_key_exists(key):
+    print("checking if remote key {0} exists".format(key))
+
+    try:
+        s3.head_object(Bucket=config['remote']['bucket'], Key=key)
+    except boto3.exceptions.ClientError as e:
+        if e.response['Error']['Code'] == "404":
+            return False
+
+        print("we should not be here")
+
+    return True
+
+
 def upload_local_file(o, delete_existing=False):
-    key = o['relative_path']
+    key = o['Key']
 
     if config['debug']:
         print("about to upload file/directory {0} to key {1}".format(o['absolute_path'], key))
@@ -463,9 +479,13 @@ def check_remote_paths_for_its_existence(path):
 
 
 # todo update versions with now parameter if set
-def update_remote_parent_versions(path, now=None):
+def update_remote_parent_versions(path, same_real_datetime_update=False):
     if not path or path == "":
         return
+
+    now = None
+    if same_real_datetime_update:
+        now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
 
     splitted_path = path.split("/")
 
@@ -477,7 +497,7 @@ def update_remote_parent_versions(path, now=None):
             print("update version for path {0}".format(path))
             print("splitted_path: {0}".format(splitted_path))
 
-        set_remote_version(path)
+        set_remote_version(path, now)
 
         splitted_path = splitted_path[:-1]
         path = "/".join(splitted_path)
@@ -645,6 +665,7 @@ def sync():
             # if remote does exist but local does not, get or create it
             if object_type(o) == "file":
                 path = remote_path(o['Key'])
+
                 if config['debug']:
                     print("checking remote object {0}".format(o))
                     print("checking file with path: {0}".format(path))
@@ -671,7 +692,7 @@ def sync():
                         check_remote_paths_for_its_existence(path_from_key(o['Key']))
                         tmp = {
                             "absolute_path": config['local_path'] + path,
-                            "relative_path": path,
+                            "Key": path,
                             "type": "file"
                         }
                         upload_local_file(tmp)
@@ -693,14 +714,14 @@ def sync():
             if o["type"] == "directory":
                 if config['debug']:
                     print("checking local directory with path: {0}".format(o["absolute_path"]))
-                if file_from_db(o["relative_path"]) is None:
+                if file_from_db(o["Key"]) is None:
                     if config['debug']:
                         print("directory with path: {0} not in db, we should add it".format(o["absolute_path"]))
-                    check_remote_paths_for_its_existence(path_from_key(o["relative_path"]))
-                    # we just do insert into db, but do not download anything (done in upload_local_file function)
+                    check_remote_paths_for_its_existence(path_from_key(o["Key"]))
+                    # we just do insert into db, but do not upload anything (done in upload_local_file function)
                     upload_local_file(o)
 
-                    tmp = list_remote_objects(prefix=o['Key'], delimiter="/")
+                    tmp = list_local_folders(o["absolute_path"])
                     remote_todo.extend(tmp)
                 else:
                     # if remote version differs from local version, we add it to todo list
@@ -714,12 +735,47 @@ def sync():
 
                     if changed["locally"] or changed["remotely"]:
                         check_remote_paths_for_its_existence(path_from_key(o['Key']))
-                        tmp = list_remote_objects(prefix=o['Key'], delimiter="/")
+                        tmp = list_local_folders(o["absolute_path"])
                         remote_todo.extend(tmp)
             else:
-                # we do file
+                if config['debug']:
+                    print("checking remote object {0}".format(o))
 
+                if file_from_db(o['Key']) is None:
+                    # 1. check if there was a new file added
+                    if config['debug']:
+                        print("local file with path: {0} not in db, we should add it".format(o['absolute_path']))
+                    check_remote_paths_for_its_existence(path_from_key(o['Key']))
+                    if remote_key_exists(o['Key']):
+                        print("CONFLICT: we try to add local file to remote, but remote file with key {0} already exists".format(o['Key']))
+                        continue
+                    upload_local_file(o)
+                    update_remote_parent_versions(path_from_key(o['Key']), True)
+                else:
+                    # 2. check if file was updated
+                    # if remote version differs from local version, we update it
+                    changed = check_changes(o)
+                    if changed is None:
+                        continue
 
+                    if changed["locally"] and changed["remotely"]:
+                        print("CONFLICT: key {0} of path {1} changed locally and remotely".format(o['Key'], path))
+                        continue
+
+                    if changed["locally"]:
+                        check_remote_paths_for_its_existence(path_from_key(o['Key']))
+                        tmp = {
+                            "absolute_path": config['local_path'] + path,
+                            "Key": path,
+                            "type": "file"
+                        }
+                        upload_local_file(tmp)
+                        update_remote_parent_versions(path_from_key(o['Key']), True)
+
+                    if changed["remotely"]:
+                        check_remote_paths_for_its_existence(path_from_key(o['Key']))
+                        download_remote_file(o)
+                        update_local_parent_versions(path_from_key(o['Key']))
         print("--- end checking local ---")
 
         # check that local version was not modified also
