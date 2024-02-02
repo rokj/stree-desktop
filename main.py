@@ -373,6 +373,7 @@ def remote_key_exists(key):
 
 def upload_local_file(o, delete_existing=False):
     key = o['Key']
+    path = remote_path(key)
 
     if config['debug']:
         print("about to upload file/directory {0} to key {1}".format(o['absolute_path'], key))
@@ -382,7 +383,7 @@ def upload_local_file(o, delete_existing=False):
 
     remote_version = ""
     version = {
-        config['local_device_name']: get_local_version(remote_path(key)),
+        config['local_device_name']: get_local_version(path),
         config['remote']['host']: remote_version
     }
 
@@ -409,17 +410,17 @@ def upload_local_file(o, delete_existing=False):
             print("we should not be here. etags should be the same. got local etag and remote etag")
         print("type {0}".format(o['type']))
 
-    if file_from_db(remote_path(key)) is None:
-        path_depth = key.count("/")
+    if file_from_db(path) is None:
+        path_depth = path.count("/")
 
         sql = "insert into files(path, path_depth, version, type, local_etag, remote_etag) values (?, ?, ?, ?, ?, ?)"
         cursor = db.cursor()
-        cursor.execute(sql, (key, path_depth, json.dumps(version), o['type'], local_etag, remote_etag))
+        cursor.execute(sql, (path, path_depth, json.dumps(version), o['type'], local_etag, remote_etag))
         db.commit()
     else:
         sql = "update files set version = ?, local_etag = ?, remote_etag = ? where path = ?"
         cursor = db.cursor()
-        cursor.execute(sql, (json.dumps(version), local_etag, remote_etag, key))
+        cursor.execute(sql, (json.dumps(version), local_etag, remote_etag, path))
         db.commit()
 
 def get_local_bucket_version():
@@ -760,7 +761,8 @@ def sync_to_remote():
                 tmp = list_local_folders(o["absolute_path"])
                 local_todo.extend(tmp)
             else:
-                # if remote version differs from local version, we add it to todo list
+                # following will be used in the future when we implement notify watcher
+                """                
                 changed = check_object_changes(o['Key'])
                 if changed is None:
                     continue
@@ -770,9 +772,10 @@ def sync_to_remote():
                     continue
 
                 if changed["locally"] or changed["remotely"]:
-                    check_remote_paths_for_its_existence(parent(o['Key']))
-                    tmp = list_local_folders(o["absolute_path"])
-                    local_todo.extend(tmp)
+                """
+                check_remote_paths_for_its_existence(parent(o['Key']))
+                tmp = list_local_folders(o["absolute_path"])
+                local_todo.extend(tmp)
         else:
             if config['debug']:
                 print("checking remote object {0}".format(o))
