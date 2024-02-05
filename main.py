@@ -184,6 +184,9 @@ def get_remote_version(key, version=None):
 
 
 def set_remote_version(key, now=None):
+    if config['debug']:
+        print("we are about to set remote version for key {0}".format(key))
+
     if now is None:
         now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
 
@@ -367,6 +370,7 @@ def remote_key_exists(key):
             return False
 
         print("we should not be here")
+        print(e)
 
     return True
 
@@ -469,6 +473,9 @@ def get_local_version(path):
 
 
 def check_remote_paths_for_its_existence(path):
+    if config['debug']:
+        print("checking path {0} for its existence".format(path))
+
     if not path or path == "":
         return
 
@@ -479,23 +486,29 @@ def check_remote_paths_for_its_existence(path):
             path = path + "/"
 
         if config['debug']:
-            print("checking path for its existence {0}".format(path))
             print("splitted_path: {0}".format(splitted_path))
 
-        response = s3.head_object(
-            Bucket=config['remote']['bucket'],
-            Key=path)
-        if not response:
-            if config['debug']:
-                print("no path object exists, so we create one")
-            s3.put_object(Bucket=config['remote']['bucket'], Key=path, Body='')
+        try:
+            response = s3.head_object(
+                Bucket=config['remote']['bucket'],
+                Key=path)
+        except botocore.exceptions.ClientError as e:
+            if e.response['Error']['Code'] == "404":
+                if config['debug']:
+                    print("no path object exists, so we create one")
+                s3.put_object(Bucket=config['remote']['bucket'], Key=path, Body='')
+        except Exception as e:
+            print("we should not be here")
+            print(e)
 
         splitted_path = splitted_path[:-1]
         path = "/".join(splitted_path)
 
 
-# todo update versions with now parameter if set
 def update_remote_parent_versions(path, same_real_datetime_update=False):
+    if config['debug']:
+        print("we are about to update version for path {0}".format(path))
+
     if not path or path == "":
         return
 
@@ -510,7 +523,6 @@ def update_remote_parent_versions(path, same_real_datetime_update=False):
             path = path + "/"
 
         if config['debug']:
-            print("update version for path {0}".format(path))
             print("splitted_path: {0}".format(splitted_path))
 
         set_remote_version(path, now)
