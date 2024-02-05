@@ -671,7 +671,7 @@ def check_for_local_changes(o):
         cursor.execute(sql, [(json.dumps(version), current_local_etag, o['Key'])])
         db.commit()
 
-def sync_from_remote():
+def check_remote():
     # todo check for deleted objects
     print("--- start checking remote ---")
     i = 0
@@ -753,7 +753,7 @@ def sync_from_remote():
 # this is far from perfect
 # for POC we are now just listing through all files and directories locally to see if there were some changes.
 # we should do this with external service written in c, rust, go... catching inotify or something.
-def sync_to_remote():
+def check_local():
     print("--- start checking local ---")
     i = 0
     local_todo = list_local_folders(os.path.join(config['local_path'], config['remote']['bucket']))
@@ -832,6 +832,11 @@ def sync_to_remote():
                     check_remote_paths_for_its_existence(parent(o['Key']))
                     download_remote_file(o)
                     update_local_parent_versions(parent(o['Key']))
+
+    if config['debug']:
+        print("we try to find files to delete")
+
+
     print("--- end checking local ---")
 
 def count_files(dir):
@@ -917,11 +922,11 @@ def sync():
         print("local AND remote files has been changed, this is possible CONFLICT, however let us try to sync anyway")
 
     elif changed_bucket["remotely"]:
-        sync_from_remote()
+        check_remote()
 
     # todo: until we implement some watcher of changed files, we do full local scan every time
     # https://github.com/gorakhargosh/watchdog/
-    sync_to_remote()
+    check_local()
 
     root.after(1000 * config['sync_time'], sync)
 
