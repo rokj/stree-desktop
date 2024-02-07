@@ -9,6 +9,7 @@
     "local_path": "",
     "local_device_name": "my_laptop",
 
+    "log": "stree.log",
     "title": "Stree",
     "logo": "logo.png",
     "sync_time": 3,

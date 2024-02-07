@@ -33,36 +33,18 @@ config = None
 with open('config.json') as f:
     config = json.load(f)
 
-root = tk.Tk()
-root.title(config['title'])
-root.resizable(False, False)  # This code helps to disable windows from resizing
-
-window_height = 500
-window_width = 900
-
-screen_width = root.winfo_screenwidth()
-screen_height = root.winfo_screenheight()
-
-x_cordinate = int((screen_width/2) - (window_width/2))
-y_cordinate = int((screen_height/2) - (window_height/2))
-
-root.geometry("{}x{}+{}+{}".format(window_width, window_height, x_cordinate, y_cordinate))
-
-img = ImageTk.PhotoImage(Image.open(config['logo']))
-panel = tk.Label(root, image=img)
-panel.pack(side="bottom", fill="both", expand="yes")
-
-
 def debug(msg):
+    global text_area
+
     if config['debug']:
         print(msg)
+        text_area.insert('end', msg + '\n')
 
 def object_type(o):
     if 'IsDirectory' in o or (o['Key'].endswith('/') and o['Size'] == 0):
         return "directory"
 
     return "file"
-
 
 def on_top_path(path):
     tmp_split = path.split("/")
@@ -73,7 +55,6 @@ def on_top_path(path):
         return True
 
     return False
-
 
 def get_local_etag(path: str, chunk_size_bytes: Optional[int] = None) -> str:
     """Calculates an expected AWS s3 upload etag for a local on-disk file.
@@ -110,10 +91,8 @@ def get_local_etag(path: str, chunk_size_bytes: Optional[int] = None) -> str:
 
     return expected_etag.replace('"', '')
 
-
 def clear_logo():
     panel.pack_forget()
-
 
 def list_remote_objects(prefix=None, delimiter=None, remove_prefix=True):
     response = s3.list_objects(
@@ -178,7 +157,6 @@ def list_local_folders(path):
 
     return entries
 
-
 # todo: implement
 def get_remote_version(key):
     debug("about to get remote version with key {0}".format(key))
@@ -208,7 +186,6 @@ def get_remote_version(key):
 
     return None
 
-
 def set_remote_version(key, now=None):
     debug("we are about to set remote version for key {0}".format(key))
 
@@ -234,7 +211,6 @@ def set_remote_version(key, now=None):
     print("error setting tag {2} for an object {0} in bucket {1} and version".format(key, config['remote']['bucket'], stree_verison_key))
 
     return None
-
 
 def get_remote_bucket_version():
     debug("getting remote bucket version")
@@ -265,7 +241,6 @@ def get_remote_bucket_version():
 
     return None
 
-
 def set_remote_bucket_version(now=None):
     if now is None:
         now = current_timestamp()
@@ -290,7 +265,6 @@ def set_remote_bucket_version(now=None):
     print("error setting tag real_datetime_updated for bucket {0}".format(config['remote']['bucket']))
 
     return None
-
 
 def file_from_db(path):
     if config['debug']:
@@ -371,7 +345,6 @@ def download_remote_file(o, delete_existing=True):
         cursor.execute(sql, (json.dumps(version), local_etag, remote_etag, path))
         db.commit()
 
-
 def get_remote_etag(key):
     response = s3.head_object(
         Bucket=config['remote']['bucket'],
@@ -381,7 +354,6 @@ def get_remote_etag(key):
         return response['ETag'].replace("\"", "")
 
     return None
-
 
 def remote_key_exists(key):
     print("checking if remote key {0} exists".format(key))
@@ -396,7 +368,6 @@ def remote_key_exists(key):
         print(e)
 
     return True
-
 
 def upload_local_file(o, delete_existing=False):
     key = o['Key']
@@ -461,7 +432,6 @@ def get_local_bucket_version():
 
     return json.loads(row['version'])
 
-
 def get_local_version(path):
     sql = 'select version, status from files where path = ?'
     cursor = db.cursor()
@@ -490,7 +460,6 @@ def get_local_version(path):
 
     return None
 
-
 def check_remote_paths_for_its_existence(path):
     debug("checking path {0} for its existence".format(path))
 
@@ -518,7 +487,6 @@ def check_remote_paths_for_its_existence(path):
 
         splitted_path = splitted_path[:-1]
         path = "/".join(splitted_path)
-
 
 def check_remote_paths_versions(path):
     debug("we set versions to paths which do not have set versions")
@@ -623,7 +591,6 @@ def update_local_parent_versions(path, same_real_datetime_update=True):
             cursor = db.cursor()
             cursor.execute(sql, [json.dumps(local_bucket_version), path])
             db.commit()
-
 
 def utc_to_float(utc_string):
     return datetime.datetime.strptime(utc_string, "%Y-%m-%d %H:%M:%S.%f").timestamp()
@@ -1190,27 +1157,22 @@ def update_versions(event):
 def toggle_pause_sync(event):
     global sync_pause
 
-
-    sync()
-
-    return
-    """
     if sync_pause:
         sync_pause = False
-        if config['debug']:
-            print("unpausing sync")        
+        debug("unpausing sync")
     else:
         sync_pause = True
-        if config['debug']:
-            print("pausing sync")
-    """
+        debug("pausing sync")
 
 def main_gui():
+    global text_area
+
     frame = tk.Frame(
         master=root,
         relief=tk.RAISED,
         borderwidth=1
     )
+    frame.pack(side="top", fill="both")
     frame.grid(row=2, column=4)
 
     add_tmp_file_button = tk.Button(frame, text="ADD", width=15, height=4)
@@ -1229,17 +1191,15 @@ def main_gui():
     activity_button.grid(column=3, row=0)
 
     text_area = tk.Text(frame, width=100, height=15, wrap="none")
-    # ys = tk.Scrollbar(frame, orient='vertical', command=text_area.yview)
+    ys = tk.Scrollbar(frame, orient='vertical', command=text_area.yview)
     # xs = tk.Scrollbar(frame, orient='horizontal', command=text_area.xview)
-    # text_area['yscrollcommand'] = ys.set
+    text_area['yscrollcommand'] = ys.set
     # text_area['xscrollcommand'] = xs.set
-    text_area.insert('end', "Lorem ipsum...\n...\n...")
     text_area.grid(column=0, row=1, sticky='nwes', columnspan=4)
     # xs.grid(column=0, row=1, sticky='we')
-    # ys.grid(column=1, row=0, sticky='ns')
-    # frame.grid_columnconfigure(0, weight=1)
-    # frame.grid_rowconfigure(0, weight=1)
-
+    ys.grid(column=4, row=1, sticky='ns', rowspan=1)
+    frame.grid_columnconfigure(0, weight=1)
+    frame.grid_rowconfigure(0, weight=1)
 
 sync_pause = False
 
@@ -1254,9 +1214,30 @@ print("TODO DELETE THIS")
 print(s3.delete_object(Bucket=config['remote']['bucket'], Key='tlenot/testni-file3.txt'))
 print(s3.delete_object(Bucket=config['remote']['bucket'], Key='testni-file4.txt'))
 
-root.after(2400, clear_logo)
+root = tk.Tk()
+root.title(config['title'])
+root.resizable(False, False)  # This code helps to disable windows from resizing
+
+window_height = 500
+window_width = 900
+
+screen_width = root.winfo_screenwidth()
+screen_height = root.winfo_screenheight()
+
+x_cordinate = int((screen_width / 2) - (window_width / 2))
+y_cordinate = int((screen_height / 2) - (window_height / 2))
+
+root.geometry("{}x{}+{}+{}".format(window_width, window_height, x_cordinate, y_cordinate))
+
+img = ImageTk.PhotoImage(Image.open(config['logo']))
+panel = tk.Label(root, image=img)
+panel.pack(side="bottom", fill="both", expand="yes")
+
+text_area = None
+
+root.after(1000, clear_logo)
+root.after(1010, main_gui)
 root.after(1000 * config['sync_time'], sync)
-root.after(2500, main_gui)
 
 root.mainloop()
 if db:
