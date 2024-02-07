@@ -26,6 +26,8 @@ remote_path = lambda key: "{0}/{1}".format(config['remote']['bucket'], key)
 skip_empty_objects = lambda o: True if o['Key'].endswith('/') and o['Size'] == 0 else False
 parent = lambda string: string.rpartition('/')[0]
 key_from_path = lambda path: path.replace(slash(config['remote']['bucket']), "", 1)
+current_timestamp = lambda: str(datetime.datetime.now(datetime.timezone.utc).timestamp())
+absolute_path = lambda key: config['local_path'] + key
 
 config = None
 with open('config.json') as f:
@@ -211,7 +213,7 @@ def set_remote_version(key, now=None):
     debug("we are about to set remote version for key {0}".format(key))
 
     if now is None:
-        now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+        now = current_timestamp()
 
     response = s3.put_object_tagging(
         Bucket=config['remote']['bucket'],
@@ -220,7 +222,7 @@ def set_remote_version(key, now=None):
             "TagSet": [
                 {
                     'Key': stree_verison_key,
-                    'Value': str(now)
+                    'Value': now
                 }
             ]
         }
@@ -266,7 +268,7 @@ def get_remote_bucket_version():
 
 def set_remote_bucket_version(now=None):
     if now is None:
-        now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+        now = current_timestamp()
 
     debug("setting {0} bucket version to {1}".format(config['remote']['bucket'], now))
 
@@ -400,8 +402,7 @@ def upload_local_file(o, delete_existing=False):
     key = o['Key']
     path = remote_path(key)
 
-    if config['debug']:
-        print("about to upload file/directory {0} to key {1}".format(o['absolute_path'], key))
+    debug("about to upload file/directory {0} to key {1}".format(o['absolute_path'], key))
 
     remote_etag = ""
     local_etag = ""
@@ -414,8 +415,7 @@ def upload_local_file(o, delete_existing=False):
 
     if o["type"] == "file":
         # this is file, so we should upload it
-        if config['debug']:
-            print("this is file, so we are doing actual upload")
+        debug("this is file, so we are doing actual upload")
 
         s3.upload_file(o['absolute_path'], config['remote']['bucket'], key)
         version[config['remote']['host']] = set_remote_version(key)
@@ -476,8 +476,8 @@ def get_local_version(path):
             version['local_device_name'] = ""
             changed = True
 
-        if config['remote_host'] not in version:
-            version['remote_host'] = ""
+        if config['remote']['host'] not in version:
+            version['remote']['host'] = ""
             changed = True
 
         if changed:
@@ -486,10 +486,7 @@ def get_local_version(path):
             cursor.execute(sql, [json.dumps(version), path])
             db.commit()
 
-        return {
-            'version': version,
-            'status': row['status']
-        }
+        return version
 
     return None
 
@@ -503,8 +500,7 @@ def check_remote_paths_for_its_existence(path):
     splitted_path = path.split("/")
 
     while len(splitted_path) > 0:
-        if not path.endswith("/"):
-            path = path + "/"
+        path = slash(path)
 
         debug("splitted_path: {0}".format(splitted_path))
 
@@ -534,8 +530,7 @@ def check_remote_paths_versions(path):
     splitted_path = path.split("/")
 
     while len(splitted_path) > 0:
-        if not path.endswith("/"):
-            path = path + "/"
+        path = slash(path)
 
         debug("splitted_path: {0}".format(splitted_path))
 
@@ -554,7 +549,7 @@ def update_remote_parent_versions(path, same_real_datetime_update=False, skip_ex
 
     now = None
     if same_real_datetime_update:
-        now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+        now = current_timestamp()
 
     splitted_path = path.split("/")
 
@@ -580,13 +575,12 @@ def update_local_parent_versions(path, same_real_datetime_update=True):
 
     now = None
     if same_real_datetime_update:
-        now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+        now = current_timestamp()
 
     splitted_path = path.split("/")
 
     while len(splitted_path) > 0:
-        if not path.endswith("/"):
-            path = path + "/"
+        path = slash(path)
 
         debug("checking path for its existence {0}".format(path))
         debug("splitted_path: {0}".format(splitted_path))
@@ -672,7 +666,7 @@ def check_bucket_changes():
 def check_object_changes(o):
     path = remote_path(o['Key'])
 
-    debug("checking object changes for path {0}".format(path))
+    debug("checking object/file/dir changes for path {0}".format(path))
 
     _remote_version = get_remote_version(o['Key'])
     _local_version = get_local_version(path)
@@ -681,18 +675,20 @@ def check_object_changes(o):
         print("could not get remote version for key {0} or local version {1}".format(o['Key'], path))
         return None
 
-    _local_version = _local_version['version']
-    _status = _local_version['status']
+    # _local_version = _local_version['version']
+    # _status = _local_version['status']
 
     local_version_device = _local_version[config['local_device_name']]
     local_version_remote = _local_version[config['remote']['host']]
 
     changed_locally = False
-    if local_version_device > local_version_remote:
+    if ((local_version_device is not None and local_version_remote is not None) and
+            local_version_device > local_version_remote):
         changed_locally = True
 
     changed_remotely = False
-    if _remote_version > local_version_remote:
+    if ((_remote_version is not None and local_version_remote is not None) and
+            _remote_version > local_version_remote):
         changed_remotely = True
 
     if changed_locally:
@@ -708,17 +704,19 @@ def check_object_changes(o):
 # here we check for local file changes based on current and previous etag calculations.
 # this should be put into separate worker, thread or something, outside of this program.
 # however, then our source of "authority" will be probably db
-def check_for_local_changes(o):
+def check_for_local_file_changes(o):
     path = remote_path(o['Key'])
     f = file_from_db(path)
     current_local_etag = get_local_etag(o['absolute_path'])
     if current_local_etag != f['local_etag']:
         version = json.loads(f['version'])
-        version[config['local_device_name']] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
+        version[config['local_device_name']] = current_timestamp()
         sql = 'update files set version = ?, local_etag = ? where path = ?'
         cursor = db.cursor()
         cursor.execute(sql, [(json.dumps(version), current_local_etag, o['Key'])])
         db.commit()
+
+    update_local_parent_versions(parent(o['Key']))
 
 def delete_in_db(path):
     debug("deleting path {0} in db".format(path))
@@ -749,14 +747,15 @@ def delete_on_local(path):
     debug("deleting path {0} on local".format(path))
 
     if os.path.isfile(path):
-        debug("path {0} is file".format(path))
+        debug("path {0} is file, so we delete it".format(path))
         os.remove(path)
 
     if os.path.isdir(path) and dir_is_empty(path):
-        debug("path {0} is dir and is empty".format(path))
+        debug("path {0} is dir and is empty, so we delete it".format(path))
         os.rmdir(path)
 
     if os.path.isdir(path) and not dir_is_empty(path):
+        debug("path {0} is dir and is not empty".format(path))
         return path
 
     return None
@@ -828,6 +827,7 @@ def check_remote():
                 check_remote_paths_for_its_existence(parent(o['Key']))
                 check_remote_paths_versions(parent(o['Key']))
                 download_remote_file(o)
+                update_local_parent_versions(parent(o['Key']))
 
                 tmp = list_remote_objects(prefix=o['Key'], delimiter="/")
                 remote_todo.extend(tmp)
@@ -843,6 +843,7 @@ def check_remote():
 
                 if changed["locally"] or changed["remotely"]:
                     check_remote_paths_for_its_existence(parent(o['Key']))
+                    check_remote_paths_versions(parent(o['Key']))
                     tmp = list_remote_objects(prefix=o['Key'], delimiter="/")
                     remote_todo.extend(tmp)
 
@@ -863,6 +864,12 @@ def check_remote():
             else:
                 # 2. check if file was updated
                 # if remote version differs from local version, we update it
+                tmp = {
+                    "absolute_path": absolute_path(o['remote_path']),
+                    "Key": o['Key'],
+                    "type": "file"
+                }
+                check_for_local_file_changes(tmp)
                 changed = check_object_changes(o)
                 if changed is None:
                     continue
@@ -873,16 +880,12 @@ def check_remote():
 
                 if changed["locally"]:
                     check_remote_paths_for_its_existence(parent(o['Key']))
-                    tmp = {
-                        "absolute_path": config['local_path'] + path,
-                        "Key": path,
-                        "type": "file"
-                    }
                     upload_local_file(tmp)
                     update_remote_parent_versions(parent(o['Key']))
 
                 if changed["remotely"]:
                     check_remote_paths_for_its_existence(parent(o['Key']))
+                    check_remote_paths_versions(parent(o['Key']))
                     download_remote_file(o)
                     update_local_parent_versions(parent(o['Key']))
 
@@ -900,40 +903,38 @@ def check_local():
         i += 1
 
         if o["type"] == "directory":
-            if config['debug']:
-                print("checking local directory with path: {0}".format(o["absolute_path"]))
-            if file_from_db(o['remote_path']) is None:
-                if config['debug']:
-                    print("directory with key {0} and path {1} not in db, we should add it".format(o['Key'], o["absolute_path"]))
+            debug("checking local directory with path: {0}".format(o["absolute_path"]))
 
-                upload_local_file(o)
+            if file_from_db(o['remote_path']) is None:
+                debug("directory with key {0} and path {1} not in db, we should add it".format(o['Key'], o["absolute_path"]))
+
                 check_remote_paths_for_its_existence(o["Key"])
+                check_remote_paths_versions(parent(o['Key']))
+                upload_local_file(o)
+                update_remote_parent_versions(parent(o['Key']))
+                update_local_parent_versions(parent(o['Key']))
                 tmp = list_local_folders(o["absolute_path"])
                 local_todo.extend(tmp)
             else:
-                # following will be used in the future when we implement notify watcher
-                """                
-                changed = check_object_changes(o['Key'])
+                changed = check_object_changes(o)
                 if changed is None:
                     continue
 
                 if changed["locally"] and changed["remotely"]:
-                    print("ERROR: CONFLICT: key {0} changed locally and remotely".format(o['Key']))
+                    print("ERROR: CONFLICT: directory {0} changed locally and remotely".format(o['Key']))
                     continue
 
                 if changed["locally"] or changed["remotely"]:
-                """
-                check_remote_paths_for_its_existence(parent(o['Key']))
-                tmp = list_local_folders(o["absolute_path"])
-                local_todo.extend(tmp)
+                    check_remote_paths_for_its_existence(parent(o['Key']))
+                    check_remote_paths_versions(parent(o['Key']))
+                    tmp = list_local_folders(o["absolute_path"])
+                    local_todo.extend(tmp)
         else:
-            if config['debug']:
-                print("checking remote object {0}".format(o))
+            debug("checking remote object {0}".format(o))
 
             if file_from_db(o['remote_path']) is None:
                 # 1. check if there was a new file added
-                if config['debug']:
-                    print("local file with path: {0} not in db, we should add it".format(o['absolute_path']))
+                debug("local file with path: {0} not in db, we should add it".format(o['absolute_path']))
 
                 if remote_key_exists(o['Key']):
                     print(
@@ -942,13 +943,15 @@ def check_local():
                     continue
 
                 check_remote_paths_for_its_existence(parent(o['Key']))
+                check_remote_paths_versions(parent(o['Key']))
                 upload_local_file(o)
                 update_remote_parent_versions(parent(o['Key']), True)
             else:
                 # 2. check if file was updated
                 # if remote version differs from local version, we update it
-                check_for_local_changes(o)
-                changed = check_object_changes(o['Key'])
+                print(o)
+                check_for_local_file_changes(o)
+                changed = check_object_changes(o)
                 if changed is None:
                     continue
 
@@ -958,7 +961,7 @@ def check_local():
 
                 if changed["locally"]:
                     tmp = {
-                        "absolute_path": config['local_path'] + o['Key'],
+                        "absolute_path": o['absolute_path'],
                         "Key": o['Key'],
                         "type": "file"
                     }
@@ -968,11 +971,71 @@ def check_local():
 
                 if changed["remotely"]:
                     check_remote_paths_for_its_existence(parent(o['Key']))
+                    check_remote_paths_versions(parent(o['Key']))
                     download_remote_file(o)
                     update_local_parent_versions(parent(o['Key']))
 
-
     print("--- END CHECKING LOCAL ---")
+
+def check_deleted():
+    print("--- START CHECKING FOR DELETED FILES ---")
+
+    start = datetime.datetime.now(datetime.timezone.utc)
+    debug("we'll try to find files which were deleted on local or on remote")
+    debug("start finding and deleting files: {0}".format(start.strftime("%Y-%m-%d %H:%M:%S.%f")))
+
+    files = {}
+    files['db'] = list_all_files_in_db()
+    files['remote'] = list_all_files_on_remote()
+    files['local'] = list_all_files_on_local()
+
+    to_delete = []
+    for file_in_db in files['db']:
+        path = file_in_db['path']
+        debug("scanning changes for path {0}".format(path))
+
+        if not path in files['local'] and not path in files['remote']:
+            delete_in_db(path)
+        elif not path in files['local'] and path in files['remote']:
+            version = json.loads(file_in_db['version'])
+            remote_version = get_remote_version(key_from_path(path))
+
+            if remote_version is None:
+                debug("could not get remote version for path {0}".format(path))
+                continue
+            if version[config['remote']['host']] == remote_version:
+                delete_on_remote(key_from_path(path))
+                delete_in_db(path)
+                continue
+
+            debug("CONFLICT: remote or local version got updated, so we cannot delete {0}".format(path))
+        elif path in files['local'] and not path in files['remote']:
+            version = json.loads(file_in_db['version'])
+            if version[config['remote']['host']] == version[config['local_device_name']]:
+                for_later = delete_on_local(absolute_path(path))
+                if for_later:
+                    to_delete.append(for_later)
+
+                delete_in_db(path)
+                continue
+
+            debug("CONFLICT: remote or local version got updated, so we cannot delete {0}".format(path))
+
+    # sometimes dirs are not empty, so we have to delete them later, or now :)
+    debug("before to delete empty folders")
+    for t in to_delete:
+        debug("trying to delete \"later\" folder {0}".format(t))
+        if dir_is_empty(t):
+            debug("dir {0} is empty. deleting".format(t))
+            os.rmdir(t)
+
+    end = datetime.datetime.now(datetime.timezone.utc)
+    diff = end - start
+
+    debug("end finding and deleting files: {0}".format(end.strftime("%Y-%m-%d %H:%M:%S.%f")))
+    debug("time diff: {0}".format(diff))
+
+    print("--- END CHECKING FOR DELETED FILES ---")
 
 def count_files(dir):
     return len([1 for x in list(os.scandir(dir)) if x.is_file()])
@@ -1038,6 +1101,8 @@ def sync():
 
         return
 
+    check_deleted()
+
     changed_bucket = check_bucket_changes()
     if changed_bucket["locally"] and changed_bucket["remotely"]:
         print("local AND remote files has been changed, this is possible CONFLICT, however let us try to sync anyway")
@@ -1049,65 +1114,19 @@ def sync():
     # https://github.com/gorakhargosh/watchdog/
     check_local()
 
-    start = datetime.datetime.now(datetime.timezone.utc)
-    debug("we'll try to find files which were deleted on local or on remote")
-    debug("start finding and deleting files: {0}".format(start.strftime("%Y-%m-%d %H:%M:%S.%f")))
+    if config['debug']:
+        print("--- AT THE END --- ")
 
-    files = {}
-    files['db'] = list_all_files_in_db()
-    files['remote'] = list_all_files_on_remote()
-    files['local'] = list_all_files_on_local()
+        files = {}
+        files['db'] = list_all_files_in_db()
+        files['remote'] = list_all_files_on_remote()
+        files['local'] = list_all_files_on_local()
 
-    to_delete = []
-    for file_in_db in files['db']:
-        path = file_in_db['path']
-        debug("scanning changes for path {0}".format(path))
+        print("len db without root: {0}".format(len(files['db'])))
+        print("len remote without root: {0}".format(len(files['remote'])))
+        print("len local without root: {0}".format(len(files['local'])))
 
-        if not path in files['local'] and not path in files['remote']:
-            delete_in_db(path)
-        elif not path in files['local'] and path in files['remote']:
-            version = json.loads(file_in_db['version'])
-            remote_version = get_remote_version(key_from_path(path))
-
-            if remote_version is None:
-                debug("could not get remote version for path {0}".format(path))
-                continue
-            if version[config['remote']['host']] == remote_version:
-                delete_on_remote(key_from_path(path))
-                delete_in_db(path)
-                continue
-
-            debug("CONFLICT: remote or local version got updated, so we cannot delete {0}".format(path))
-        elif path in files['local'] and not path in files['remote']:
-            version = json.loads(file_in_db['version'])
-            remote_version = get_remote_version(key_from_path(path))
-
-            if version[config['remote']['host']] == remote_version:
-                for_later = delete_on_local(path)
-                if not for_later is None:
-                    to_delete.append(for_later)
-
-                delete_in_db(path)
-                continue
-
-            debug("CONFLICT: remote or local version got updated, so we cannot delete {0}".format(path))
-
-    # sometimes dirs are not empty, so we have to delete them later, or now :)
-    for t in to_delete:
-        debug("trying to delete \"later\" folder {0}".format(t))
-        if dir_is_empty(t):
-            debug("dir {0} is empty. deleting".format(t))
-            os.rmdir(t)
-
-    end = datetime.datetime.now(datetime.timezone.utc)
-    diff = end - start
-
-    debug("len db without root: {0}".format(len(files['db'])))
-    debug("len remote without root: {0}".format(len(files['remote'])))
-    debug("len local without root: {0}".format(len(files['local'])))
-    debug("end finding and deleting files: {0}".format(end.strftime("%Y-%m-%d %H:%M:%S.%f")))
-    debug("time diff: {0}".format(diff))
-
+        print("--- AT THE END --- ")
 
     # root.after(1000 * config['sync_time'], sync)
 
@@ -1137,14 +1156,23 @@ def get_db():
 
 
 def add_tmp_file_click(event):
-    # print(s3.upload_file('/home/arne/tmp/testni-file3.txt', config['remote']['bucket'], 'testni-file4.txt'))
-    print(s3.put_object(Body='FAFAFA', Bucket=config['remote']['bucket'], Key='tlenot/testni-file3.txt'))
+    print(s3.put_object(Body="dasfdsff", Bucket=config['remote']['bucket'], Key="test6.txt"))
+    set_remote_version("test6.txt")
+    update_remote_parent_versions(parent("test6.txt"), True)
+    set_remote_bucket_version()
 
-    set_remote_version('tlenot/testni-file3.txt')
-    update_remote_parent_versions(parent('tlenot/testni-file3.txt'), True)
-    # set_remote_bucket_version()
-
-    # update_remote_parent_versions(path_from_key('tlenot/testni-file3.txt'))
+    # i = 1
+    # while i < 11:
+    #     print(s3.put_object(Body="".format(i), Bucket=config['remote']['bucket'], Key="tlenot1/".format(i)))
+    #     set_remote_version("tlenot1/")
+    #     update_remote_parent_versions(parent("tlenot1/".format(i)), True)
+    #
+    #     print(s3.put_object(Body="FAFAFA{0}".format(i), Bucket=config['remote']['bucket'], Key="tlenot1/testni-file{0}.txt".format(i)))
+    #     set_remote_version("tlenot1/testni-file{0}.txt".format(i))
+    #     update_remote_parent_versions(parent("tlenot1/testni-file{0}.txt".format(i)), True)
+    #     set_remote_bucket_version()
+    #
+    #     i += 1
 
 def update_versions(event):
     sql = 'select path from files'
