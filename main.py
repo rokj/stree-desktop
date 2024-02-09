@@ -8,12 +8,10 @@ import boto3
 import botocore
 from sqlite3 import Error
 import hashlib
-import glob
 
 import pathlib
 from typing import Optional
 import math
-import re
 from pathlib import Path
 
 # TODO
@@ -36,9 +34,14 @@ with open('config.json') as f:
 def debug(msg):
     global text_area
 
+    local_datetime = datetime.datetime.now()
+    msg = str(local_datetime) + " - " + msg
+
     if config['debug']:
         print(msg)
-        text_area.insert('end', msg + '\n')
+        text_area.insert(tk.INSERT, msg + "\n")
+        text_area.update()
+        text_area.see("end")
 
 def object_type(o):
     if 'IsDirectory' in o or (o['Key'].endswith('/') and o['Size'] == 0):
@@ -1008,13 +1011,14 @@ def count_files(dir):
     return len([1 for x in list(os.scandir(dir)) if x.is_file()])
 
 def sync():
+    global sync_pause, db
+
     debug("just before sync")
 
     if sync_pause:
+        debug("sync paused. waiting for {0} seconds".format(config['sync_time']))
         root.after(1000 * config['sync_time'], sync)
         return
-
-    global db
 
     debug("syncing after {0}s".format(config['sync_time']))
 
@@ -1082,21 +1086,20 @@ def sync():
     check_local()
 
     if config['debug']:
-        print("--- AT THE END --- ")
+        debug("--- AT THE END --- ")
 
         files = {}
         files['db'] = list_all_files_in_db()
         files['remote'] = list_all_files_on_remote()
         files['local'] = list_all_files_on_local()
 
-        print("len db without root: {0}".format(len(files['db'])))
-        print("len remote without root: {0}".format(len(files['remote'])))
-        print("len local without root: {0}".format(len(files['local'])))
+        debug("len db without root: {0}".format(len(files['db'])))
+        debug("len remote without root: {0}".format(len(files['remote'])))
+        debug("len local without root: {0}".format(len(files['local'])))
 
-        print("--- AT THE END --- ")
+        debug("--- AT THE END --- ")
 
-    # root.after(1000 * config['sync_time'], sync)
-
+    root.after(1000 * config['sync_time'], sync)
 
 def get_db():
     conn = None
@@ -1120,7 +1123,6 @@ def get_db():
         print(e)
 
     return conn
-
 
 def add_tmp_file_click(event):
     print(s3.put_object(Body="dasfdsff", Bucket=config['remote']['bucket'], Key="test6.txt"))
@@ -1153,53 +1155,48 @@ def update_versions(event):
 
     set_remote_bucket_version()
 
-
 def toggle_pause_sync(event):
     global sync_pause
+
+    caller = event.widget
 
     if sync_pause:
         sync_pause = False
         debug("unpausing sync")
+        caller.config(text='Pause sync')
     else:
         sync_pause = True
         debug("pausing sync")
+        caller.config(text='Unpause sync')
 
 def main_gui():
-    global text_area
+    global root, text_area, pause_sync_button
 
-    frame = tk.Frame(
-        master=root,
-        relief=tk.RAISED,
-        borderwidth=1
-    )
-    frame.pack(side="top", fill="both")
-    frame.grid(row=2, column=4)
+    text_area = tk.Text(root)
+    scrollbar = tk.Scrollbar(root, command=text_area.yview, orient='vertical')
+    scrollbar.pack(side=tk.RIGHT, fill='y')
+    scrollbar.grid(row=1, column=1, sticky="ns")
 
-    add_tmp_file_button = tk.Button(frame, text="ADD", width=15, height=4)
-    add_tmp_file_button.grid(column=0, row=0)
+    text_area.configure(yscrollcommand=scrollbar.set)
+    frame_buttons = tk.Frame(root, relief=tk.RAISED, bd=2)
+
+    add_tmp_file_button = tk.Button(frame_buttons, text="ADD", width=15, height=4)
+    add_tmp_file_button.grid(column=0, row=0, sticky="ew", padx=5, pady=5)
     add_tmp_file_button.bind('<Button-1>', add_tmp_file_click)
 
-    update_versions_button = tk.Button(frame, text="UPDATE VERSIONS", width=15, height=4)
-    update_versions_button.grid(column=1, row=0)
+    update_versions_button = tk.Button(frame_buttons, text="UPDATE VERSIONS", width=15, height=4)
+    update_versions_button.grid(column=1, row=0, sticky="ew", padx=5, pady=5)
     update_versions_button.bind('<Button-1>', update_versions)
 
-    pause_sync_button = tk.Button(frame, text="Pause sync", width=15, height=4)
-    pause_sync_button.grid(column=2, row=0)
+    pause_sync_button = tk.Button(frame_buttons, text="Pause sync", width=15, height=4)
+    pause_sync_button.grid(column=2, row=0, sticky="ew", padx=5, pady=5)
     pause_sync_button.bind('<Button-1>', toggle_pause_sync)
 
-    activity_button = tk.Button(frame, text="Activity", width=15, height=4)
-    activity_button.grid(column=3, row=0)
+    activity_button = tk.Button(frame_buttons, text="Activity", width=15, height=4)
+    activity_button.grid(column=3, row=0, sticky="ew", padx=5, pady=5)
 
-    text_area = tk.Text(frame, width=100, height=15, wrap="none")
-    ys = tk.Scrollbar(frame, orient='vertical', command=text_area.yview)
-    # xs = tk.Scrollbar(frame, orient='horizontal', command=text_area.xview)
-    text_area['yscrollcommand'] = ys.set
-    # text_area['xscrollcommand'] = xs.set
-    text_area.grid(column=0, row=1, sticky='nwes', columnspan=4)
-    # xs.grid(column=0, row=1, sticky='we')
-    ys.grid(column=4, row=1, sticky='ns', rowspan=1)
-    frame.grid_columnconfigure(0, weight=1)
-    frame.grid_rowconfigure(0, weight=1)
+    frame_buttons.grid(row=0, column=0, sticky="ns")
+    text_area.grid(row=1, column=0, sticky='nwes')
 
 sync_pause = False
 
@@ -1216,10 +1213,11 @@ print(s3.delete_object(Bucket=config['remote']['bucket'], Key='testni-file4.txt'
 
 root = tk.Tk()
 root.title(config['title'])
-root.resizable(False, False)  # This code helps to disable windows from resizing
+root.rowconfigure(1, minsize=800, weight=1)
+root.columnconfigure(0, minsize=800, weight=1)
 
-window_height = 500
 window_width = 900
+window_height = 900
 
 screen_width = root.winfo_screenwidth()
 screen_height = root.winfo_screenheight()
@@ -1234,6 +1232,7 @@ panel = tk.Label(root, image=img)
 panel.pack(side="bottom", fill="both", expand="yes")
 
 text_area = None
+pause_sync_button = None
 
 root.after(1000, clear_logo)
 root.after(1010, main_gui)
