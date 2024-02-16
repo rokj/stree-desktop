@@ -217,27 +217,35 @@ def set_remote_version(key, now=None):
 def get_remote_bucket_version():
     debug("getting remote bucket version")
 
-    response = s3.get_bucket_tagging(
-        Bucket=config['remote']['bucket'],
-    )
+    try:
+        response = s3.get_bucket_tagging(
+            Bucket=config['remote']['bucket'],
+        )
 
-    if response:
-        found = ""
-        for tag in response['TagSet']:
-            if tag['Key'] == stree_verison_key:
-                found = tag['Value']
-                break
+        if response:
+            found = ""
+            for tag in response['TagSet']:
+                if tag['Key'] == stree_verison_key:
+                    found = tag['Value']
+                    break
 
-        if found == "":
-            found = set_remote_bucket_version()
+            if found == "":
+                found = set_remote_bucket_version()
 
-            if not found:
-                return None
+                if not found:
+                    print("error sett tag {1} for bucket {0}".format(config['remote']['bucket'], stree_verison_key))
+                    return None
 
-        if config['debug']:
-            print("remote bucket version {0}".format(found))
+            if config['debug']:
+                print("remote bucket version {0}".format(found))
 
-        return found
+            return found
+    except ClientError:
+        debug("could not get tags for bucket {0}, so we try to set it".format(config['remote']['bucket']))
+        found = set_remote_bucket_version()
+
+        if found:
+            return found
 
     print("error getting tag {1} of a bucket {0}".format(config['remote']['bucket'], stree_verison_key))
 
@@ -615,9 +623,9 @@ def check_bucket_changes():
         print("could not get local bucket version for bucket {0}".format(config['remote']['bucket']))
         return None
 
-    local_version_device = float(_local_version[config['local_device_name']])
-    local_version_remote = float(_local_version[config['remote']['host']])
-    remote_version = float(_remote_version)
+    local_version_device = 0 if _local_version[config['local_device_name']] == '' else float(_local_version[config['local_device_name']])
+    local_version_remote = 0 if _local_version[config['remote']['host']] == '' else float(_local_version[config['remote']['host']])
+    remote_version = 0 if _remote_version == '' else float(_remote_version)
 
     changed_locally = False
     if local_version_device > local_version_remote:
@@ -1066,6 +1074,11 @@ def sync():
         if count_files(config['local_path']) > 0:
             debug("ERROR: local path should be empty on first run")
             return
+
+        local_bucket_dir = os.path.join(config['local_path'], config['remote']['bucket'])
+        if not os.path.exists(local_bucket_dir):
+            debug("creating local bucket directory {0}".format(local_bucket_dir))
+            os.makedirs(local_bucket_dir)
 
         # we insert bucket path
         bucket_init_version = {
