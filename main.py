@@ -109,8 +109,8 @@ def list_remote_objects(prefix=None, delimiter=None, remove_prefix=True):
                 'IsDirectory': True
             })
 
-    for r in response:
-        print(r)
+    if not 'Contents' in response:
+        return []
 
     for r in response['Contents']:
         r['remote_path'] = remote_path(r['Key'])
@@ -787,13 +787,16 @@ def sanitize(path: pathlib.Path):
     return tmp
 
 def list_all_files_on_local():
-    if config['debug']:
-        print("list all files on local path {0}".format(config['local_path']))
+    debug("list all files on local path {0}".format(config['local_path']))
 
     tmp = list(Path(config['local_path']).rglob("*"))
     # we get relative paths
     tmp = list(map(sanitize, tmp))
     # we remove root (bucket) from list
+
+    if len(tmp) == 0:
+        return []
+    
     i = 0
     for t in tmp:
         if t == config['remote']['bucket']:
