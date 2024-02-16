@@ -3,15 +3,16 @@
         "host": "",
         "access_key": "",
         "secret_key": "",
-        "bucket": ""
+        "bucket": "",
+        "max_keys": 1000000
     },
 
-    "local_path": "",
+    "local_path": "p",
     "local_device_name": "my_laptop",
 
     "log": "stree.log",
     "title": "Stree",
-    "logo": "logo.png",
+    "logo": "stree-logo.png",
     "sync_time": 3,
     "debug": true
 }

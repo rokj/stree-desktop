@@ -11,13 +11,9 @@ import hashlib
 
 import pathlib
 from typing import Optional
-import math
+import math, sys
 from pathlib import Path
-
-# TODO
-print("TODO")
-print("watch out; we are deleting everything in /home/arne/development/python/stree/arnes-shramba/")
-os.system("rm -rf /home/arne/tmp/stree/*")
+from botocore.exceptions import ClientError
 
 stree_verison_key = "stree_version"
 remote_path = lambda key: "{0}/{1}".format(config['remote']['bucket'], key)
@@ -27,21 +23,22 @@ key_from_path = lambda path: path.replace(slash(config['remote']['bucket']), "",
 current_timestamp = lambda: str(datetime.datetime.now(datetime.timezone.utc).timestamp())
 absolute_path = lambda key: config['local_path'] + key
 
-config = None
-with open('config.json') as f:
-    config = json.load(f)
-
-def debug(msg):
+def just_print(msg, to_gui_also=True):
     global text_area
 
     local_datetime = datetime.datetime.now()
-    msg = str(local_datetime) + " - " + msg
+    msg = str(local_datetime) + " - " + msg                
 
-    if config['debug']:
-        print(msg)
+    print(msg)
+
+    if to_gui_also:
         text_area.insert(tk.INSERT, msg + "\n")
         text_area.update()
         text_area.see("end")
+
+def debug(msg, to_gui_also=True):
+    if config['debug']:
+        just_print(msg, to_gui_also)
 
 def object_type(o):
     if 'IsDirectory' in o or (o['Key'].endswith('/') and o['Size'] == 0):
@@ -112,6 +109,9 @@ def list_remote_objects(prefix=None, delimiter=None, remove_prefix=True):
                 'IsDirectory': True
             })
 
+    for r in response:
+        print(r)
+
     for r in response['Contents']:
         r['remote_path'] = remote_path(r['Key'])
 
@@ -160,7 +160,6 @@ def list_local_folders(path):
 
     return entries
 
-# todo: implement
 def get_remote_version(key):
     debug("about to get remote version with key {0}".format(key))
 
@@ -742,9 +741,34 @@ def list_all_files_in_db():
 
     return rows
 
+def bucket_exists():
+    try:
+        s3.head_bucket(Bucket=config['remote']['bucket'])
+    except ClientError:
+        debug("bucket {0} does not exists".format(config['remote']['bucket']))
+
+        return False
+    
+    return True
+
+def create_bucket():
+    debug("creating bucket {0}".format(config['remote']['bucket']))
+
+    try:
+        s3.create_bucket(Bucket=config['remote']['bucket'])
+    except ClientError as e:
+        debug("could not create bucket {0}".format(config['remote']['bucket']))
+        debug(e)
+
+        return False
+    
+    return True
+
 def list_all_files_on_remote():
-    if config['debug']:
-        print("listing all files on remote")
+    debug("listing all files on remote")
+
+    if not bucket_exists():
+        create_bucket()
 
     tmp = []
     result = list_remote_objects('', '', False)
@@ -1032,11 +1056,12 @@ def sync():
     # we do not require "lock" for first usage
     if row['count'] == 0:
         if not os.path.exists(config['local_path']):
-            print("local directory {0} for storing files should exist".format(config['local_path']))
+            msg = "ERROR: local directory {0} for storing files should exist".format(config['local_path'])
+            debug(msg)
             return
 
         if count_files(config['local_path']) > 0:
-            print("local path should be empty on first run")
+            debug("ERROR: local path should be empty on first run")
             return
 
         # we insert bucket path
@@ -1106,19 +1131,14 @@ def get_db():
     try:
         conn = sqlite3.connect('stree.db')
         conn.row_factory = sqlite3.Row
-
-        sql = 'drop table files'
         cursor = conn.cursor()
-        cursor.execute(sql)
-
-        sql = 'drop table info'
-        cursor.execute(sql)
 
         sql = 'create table if not exists files(id integer primary key autoincrement, path varchar(255) unique, path_depth integer, version varchar(255), type varchar(9), remote_etag varchar(32), local_etag varchar(32), status varchar(7))'
         cursor.execute(sql)
 
         sql = 'create table if not exists info(key varchar(20) primary key, value varchar(50))'
         cursor.execute(sql)
+        conn.commit()
     except Error as e:
         print(e)
 
@@ -1198,6 +1218,20 @@ def main_gui():
     frame_buttons.grid(row=0, column=0, sticky="ns")
     text_area.grid(row=1, column=0, sticky='nwes')
 
+# todo show gui message
+if not os.path.exists('config.json'):
+    msg = "Create configuration file config.json. Take a look at README for example."
+    just_print(msg, False)
+
+    sys.exit(1)
+
+config = None
+with open('config.json') as f:
+    config = json.load(f)
+
+if config['debug']:
+    debug(json.dumps(config), False)
+
 sync_pause = False
 
 db = get_db()
@@ -1206,10 +1240,6 @@ s3 = boto3.client("s3",
     aws_secret_access_key=config['remote']['secret_key'],
     endpoint_url=config['remote']['host'],
 )
-
-print("TODO DELETE THIS")
-print(s3.delete_object(Bucket=config['remote']['bucket'], Key='tlenot/testni-file3.txt'))
-print(s3.delete_object(Bucket=config['remote']['bucket'], Key='testni-file4.txt'))
 
 root = tk.Tk()
 root.title(config['title'])
