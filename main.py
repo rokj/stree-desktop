@@ -8,6 +8,7 @@ import boto3
 import botocore
 from sqlite3 import Error
 import hashlib
+import re
 
 import pathlib
 from typing import Optional
@@ -151,7 +152,7 @@ def set_remote_key_based_on_local_path(path):
     key = key.replace(slash(config['remote']['bucket']), "", 1)
 
     if os.name == "nt":
-        key = key.replace("\\", "/")
+        key = re.sub(r'(\\+)', '/', key)
 
     return key
 
@@ -169,7 +170,7 @@ def list_local_folders(path):
 
         if tmp['type'] == "directory":
             tmp['absolute_path'] = slash(tmp['absolute_path'])
-            tmp['Key'] = slash(tmp['Key'])
+            tmp['Key'] = just_slash(tmp['Key'])
             tmp['remote_path'] = just_slash(tmp['remote_path'])
 
         entries.append(tmp)
@@ -574,8 +575,7 @@ def update_remote_parent_versions(path, same_real_datetime_update=False, skip_ex
     splitted_path = path.split("/")
 
     while len(splitted_path) > 0:
-        if not path.endswith("/"):
-            path = path + "/"
+        path = just_slash(path)
 
         debug("splitted_path: {0}".format(splitted_path))
 
@@ -1241,8 +1241,8 @@ def main_gui():
     pause_sync_button.grid(column=2, row=0, sticky="ew", padx=5, pady=5)
     pause_sync_button.bind('<Button-1>', toggle_pause_sync)
 
-    activity_button = tk.Button(frame_buttons, text="Activity", width=15, height=4)
-    activity_button.grid(column=3, row=0, sticky="ew", padx=5, pady=5)
+    # activity_button = tk.Button(frame_buttons, text="Activity", width=15, height=4)
+    # activity_button.grid(column=3, row=0, sticky="ew", padx=5, pady=5)
 
     frame_buttons.grid(row=0, column=0, sticky="ns")
     text_area.grid(row=1, column=0, sticky='nwes')
