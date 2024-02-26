@@ -4,7 +4,7 @@ Tool for two way synchronization of files on s3 endpoint.
 
 INSTALL/USAGE
 
-1. install requirements.txt with `pip install -r requirements.txt`
+1. install requirements with `pip install -r requirements.txt`
 2. set configuration in config.json
 3. `python main.py`
 
