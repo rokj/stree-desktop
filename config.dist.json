@@ -7,7 +7,7 @@
         "max_keys": 1000000
     },
 
-    "local_path": "p",
+    "local_path": "",
     "local_device_name": "my_laptop",
 
     "log": "stree.log",
