@@ -104,36 +104,40 @@ def clear_logo():
     panel.pack_forget()
 
 def list_remote_objects(prefix=None, delimiter=None, remove_prefix=True):
-    response = s3.list_objects(
-        Bucket=config['remote']['bucket'],
-        MaxKeys=config['remote']['max_keys'],
-        Prefix=prefix,
-        Delimiter=delimiter
-    )
+    objects = []
 
-    if 'CommonPrefixes' in response:
-        for cp in response['CommonPrefixes']:
-            response['Contents'].append({
-                'Key': cp['Prefix'],
-                'IsDirectory': True
-            })
+    paginator = s3.get_paginator("list_objects_v2")
+    response = paginator.paginate(Bucket=config['remote']['bucket'], PaginationConfig={"PageSize": 1000}, Prefix=prefix, Delimiter=delimiter)
+    for page in response:
+        tmp_objects = []
 
-    if not 'Contents' in response:
-        return []
+        if 'CommonPrefixes' in page:
+            for cp in page['CommonPrefixes']:         
+                tmp_objects.append({
+                    'Key': cp['Prefix'],
+                    'IsDirectory': True
+                })
 
-    for r in response['Contents']:
-        r['remote_path'] = remote_path(r['Key'])
+        if 'Contents' in page:
+            tmp_objects = tmp_objects + page['Contents']
 
-    if remove_prefix:
-        tmp = []
-        for r in response['Contents']:
-            if r['Key'] == prefix:
-                continue
-            tmp.append(r)
+        for t in tmp_objects:
+            t['remote_path'] = remote_path(t['Key'])
 
-        return tmp
+        if remove_prefix:
+            tmp = []
+            for t in tmp_objects:
+                if t['Key'] == prefix:
+                    continue
+                tmp.append(t)
 
-    return response['Contents']
+            objects = objects + tmp
+
+            continue        
+
+        objects = objects + tmp_objects
+
+    return objects
 
 def list_local_folders_in_db(path):
     path_depth = path.count("/")
@@ -715,9 +719,6 @@ def check_object_changes(o):
         just_print("could not get remote version for key {0} or local version {1}".format(o['Key'], path))
         return None
 
-    # _local_version = _local_version['version']
-    # _status = _local_version['status']
-
     local_version_device = _local_version[config['local_device_name']]
     local_version_remote = _local_version[config['remote']['host']]
 
@@ -842,6 +843,7 @@ def list_all_files_on_remote():
 
     tmp = []
     result = list_remote_objects('', '', False)
+    
     for r in result:
         tmp.append(r['remote_path'])
 
@@ -1079,16 +1081,14 @@ def check_deleted():
 
             debug("CONFLICT: remote or local version got updated, so we cannot delete {0}".format(path))
         elif path in files['local'] and not path in files['remote']:
-            version = json.loads(file_in_db['version'])
-            if version[config['remote']['host']] == version[config['local_device_name']]:
-                for_later = delete_on_local(absolute_path(path))
-                if for_later:
-                    to_delete.append(for_later)
+            # maybe not needed
+            # version = json.loads(file_in_db['version'])
+            # if version[config['remote']['host']] == version[config['local_device_name']]:
+            for_later = delete_on_local(absolute_path(path))
+            if for_later:
+                to_delete.append(for_later)
 
-                delete_in_db(path)
-                continue
-
-            debug("CONFLICT: remote or local version got updated, so we cannot delete {0}".format(path))
+            delete_in_db(path)
 
     # sometimes dirs are not empty, so we have to delete them later, or now :)
     debug("before to delete empty folders")
