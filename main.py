@@ -201,7 +201,7 @@ def get_remote_version(key):
         if e.response['Error']['Code'] == "404":
             return None
 
-    debug("error getting tag {2} of an object {0} in bucket {1}".format(key, config['remote']['bucket'], stree_verison_key))
+    debug("ERROR: getting tag {2} of an object {0} in bucket {1}".format(key, config['remote']['bucket'], stree_verison_key))
 
     return None
 
@@ -227,7 +227,7 @@ def set_remote_version(key, now=None):
     if response:
         return now
 
-    debug("error setting tag {2} for an object {0} in bucket {1} and version".format(key, config['remote']['bucket'], stree_verison_key))
+    debug("ERROR: setting tag {2} for an object {0} in bucket {1} and version".format(key, config['remote']['bucket'], stree_verison_key))
 
     return None
 
@@ -288,7 +288,7 @@ def set_remote_bucket_version(now=None):
     if response:
         return now
 
-    debug("error setting tag real_datetime_updated for bucket {0}".format(config['remote']['bucket']))
+    debug("ERROR: setting tag {1} for bucket {0}".format(config['remote']['bucket'], stree_verison_key))
 
     return None
 
@@ -357,19 +357,30 @@ def download_remote_file(o, delete_existing=True):
             os.remove(absolute_path)
 
         if not skip_empty_objects(o):
+            i = 0
             while True:
-                i = 0
-                try:                
-                    s3.download_file(config['remote']['bucket'], key, absolute_path)
+                try:
+                    debug("just before actual download")                
+                    # because of https://github.com/boto/boto3/issues/3781 we cannot use the following line
+                    # s3.download_file(config['remote']['bucket'], key, absolute_path). instead we have to
+                    # use get_object and do it in chunks
+                    obj = s3.get_object(
+                        Bucket=config['remote']['bucket'],
+                        Key=key
+                    )
+                    with open(f"{absolute_path}", 'wb') as f:
+                        for chunk in obj['Body'].iter_chunks(chunk_size=4096):
+                            f.write(chunk)                    
+
                     break
                 except Exception as e:
                     if i == 3:
                         raise 
 
+                    debug(str(e))
                     debug("failed to download. try number: {0}".format(i))
 
-                    i += 1
-                    continue
+                    i += 1                    
 
             local_etag = get_local_etag(absolute_path)
     else:
@@ -816,7 +827,7 @@ def create_bucket():
     try:
         s3.create_bucket(Bucket=config['remote']['bucket'])
     except ClientError as e:
-        debug("could not create bucket {0}".format(config['remote']['bucket']))
+        debug("ERROR: could not create bucket {0}".format(config['remote']['bucket']))
         debug(e)
 
         return False
