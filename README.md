@@ -1,6 +1,6 @@
 INFO
 
-Tool for two way synchronization of files on s3 endpoint.
+Tool for two way synchronization of files with s3 endpoint.
 
 INSTALL/USAGE
 
