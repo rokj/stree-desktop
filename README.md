@@ -1,6 +1,8 @@
 INFO
 
-Tool for two way synchronization of files with s3 endpoint.
+POC tool for two way synchronization of files with s3 endpoint.
+
+It uses s3 tag capabilities to store version of a file on particular client.
 
 INSTALL/USAGE
 
