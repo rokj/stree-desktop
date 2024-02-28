@@ -1125,7 +1125,11 @@ def acquire_sync_lock():
         if sorted_by_lastmodified[0]['Key'] == lock_objectname:
             return True    
 
-        s3.delete_object(Bucket=config['remote']['bucket'], Key=lock_objectname)
+        response = s3.delete_object(Bucket=config['remote']['bucket'], Key=lock_objectname)
+        if not (response and 'ResponseMetadata' in response):
+            debug(f"could not delete lock {lock_objectname}")
+
+        debug(f"successfully deleted lock {lock_objectname}")        
         
         return False
     except Exception as e:
@@ -1276,7 +1280,7 @@ def toggle_pause_sync(event):
 def main_gui():
     global root, text_area, pause_sync_button
 
-    text_area = tk.Text(root, state='disabled')
+    text_area = tk.Text(root)
     scrollbar = tk.Scrollbar(root, command=text_area.yview, orient='vertical')
     scrollbar.pack(side=tk.RIGHT, fill='y')
     scrollbar.grid(row=1, column=1, sticky="ns")
