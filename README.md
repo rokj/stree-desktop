@@ -10,4 +10,5 @@ INSTALL/USAGE
 
 REFERENCES
 - https://aykevl.nl/2017/04/concise-version-vectors
+- https://stackoverflow.com/a/75347123/1107750
 - https://owncloud.dev/architecture/efficient-stat-polling/
