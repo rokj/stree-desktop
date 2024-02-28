@@ -7,7 +7,7 @@ It uses s3 tag capabilities to store version of a file on particular client.
 INSTALL/USAGE
 
 1. install requirements with `pip install -r requirements.txt`
-2. set configuration in config.json
+2. set configuration in config.json based on config.dist.json
 3. `python main.py`
 
 REFERENCES
