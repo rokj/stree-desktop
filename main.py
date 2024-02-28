@@ -1,5 +1,6 @@
 import datetime
 import tkinter as tk
+import uuid
 from PIL import ImageTk, Image
 import json
 import os
@@ -17,6 +18,7 @@ from pathlib import Path
 from botocore.exceptions import ClientError
 
 stree_verison_key = "stree_version"
+lock_basename = '.sync.lock'
 remote_path = lambda key: "{0}/{1}".format(config['remote']['bucket'], key)
 skip_empty_objects = lambda o: True if o['Key'].endswith('/') and o['Size'] == 0 else False
 parent = lambda string: string.rpartition('/')[0]
@@ -1109,6 +1111,29 @@ def check_deleted():
 def count_files(dir):
     return len([1 for x in list(os.scandir(dir)) if x.is_file()])
 
+def acquire_sync_lock():
+    global lock_objectname
+
+    try:
+        lock_objectname = f"{lock_basename}.{uuid.uuid4()}"        
+        debug(f"creating lock {lock_objectname} in bucket {config['remote']['bucket']}")
+        s3.put_object(Bucket=config['remote']['bucket'], Key=lock_objectname, Body='')
+        remote_locks = list_remote_objects(f'{lock_basename}', '/')
+        sorted_by_lastmodified = sorted(remote_locks, key=lambda x: x['LastModified'], reverse=True)
+        for s in sorted_by_lastmodified:
+            print(f"{s['Key']} {s['LastModified']}")
+        if sorted_by_lastmodified[0]['Key'] == lock_objectname:
+            return True    
+
+        s3.delete_object(Bucket=config['remote']['bucket'], Key=lock_objectname)
+        
+        return False
+    except Exception as e:
+        debug(f"could not aquire lock with {lock_objectname}")
+        debug(e)
+
+    return False
+
 def sync():
     global sync_pause, db
 
@@ -1116,6 +1141,11 @@ def sync():
 
     if sync_pause:
         debug("sync paused. waiting for {0} seconds".format(config['sync_time']))
+        root.after(1000 * config['sync_time'], sync)
+        return
+    
+    if not acquire_sync_lock():
+        debug("other sync in progress. waiting for {0} seconds".format(config['sync_time']))
         root.after(1000 * config['sync_time'], sync)
         return
 
@@ -1127,7 +1157,7 @@ def sync():
     row = result.fetchone()
     debug("we have {0} files in local db".format(row['count']))
 
-    # if this is first launch of the program, then we populate local db with remote "data"
+    # if this is first run of the program, then we populate local db with remote "data"
     # we do not require "lock" for first usage
     if row['count'] == 0:
         if not os.path.exists(config['local_path']):
@@ -1203,6 +1233,12 @@ def sync():
 
         debug("--- AT THE END --- ")
 
+    response = s3.delete_object(Bucket=config['remote']['bucket'], Key=lock_objectname)
+    if not (response and 'ResponseMetadata' in response):
+        debug(f"could not delete lock {lock_objectname}")
+
+    debug(f"successfully deleted lock {lock_objectname}")
+
     root.after(1000 * config['sync_time'], sync)
 
 def get_db():
@@ -1240,7 +1276,7 @@ def toggle_pause_sync(event):
 def main_gui():
     global root, text_area, pause_sync_button
 
-    text_area = tk.Text(root)
+    text_area = tk.Text(root, state='disabled')
     scrollbar = tk.Scrollbar(root, command=text_area.yview, orient='vertical')
     scrollbar.pack(side=tk.RIGHT, fill='y')
     scrollbar.grid(row=1, column=1, sticky="ns")
